@@ -300,6 +300,20 @@ body.gated .view,body.gated .tabbar,body.gated .topnav,body.gated .add-top{displ
 #mWhRow:has(#mWhWrap[hidden]):has(#mWh2Wrap[hidden]){display:none}
 body.gated .whbar{display:none!important}
 
+/* 角色：現場人員不顯示金額 */
+body.nomoney .money-only{display:none!important}
+.adm-sec{margin-bottom:14px}
+.prc{display:grid;grid-template-columns:minmax(0,1fr) 96px auto;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
+.prc:last-child{border-bottom:0}
+.prc .nm{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.prc .sub{font-size:.78rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.prc .field{min-height:40px;padding:6px 8px;text-align:right}
+.prc2{display:grid;grid-template-columns:minmax(0,1fr) 84px 84px auto;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
+.prc2 .field{min-height:40px;padding:6px 8px;text-align:right}
+.logrow{padding:8px 0;border-bottom:1px solid var(--line);font-size:.86rem}
+.logrow .sub{font-size:.78rem;color:var(--muted)}
+.mem select.field{min-height:36px;padding:4px 8px;width:auto}
+
 /* 批次匯入 */
 .btbl th,.btbl td{text-align:left;white-space:nowrap;font-size:.85rem}
 .btbl td.num{text-align:right}
@@ -309,6 +323,8 @@ body.gated .whbar{display:none!important}
 #bulkDlg .stats{grid-template-columns:repeat(2,minmax(0,1fr))}
 
 @media (min-width:900px){
+  body.nomoney .plist-head,body.nomoney .prow{grid-template-columns:minmax(0,1.6fr) 110px 90px}
+  body.nomoney .plist-head span:nth-child(2),body.nomoney .plist-head span:nth-child(3),body.nomoney .plist-head span:nth-child(4),body.nomoney .prow .ex{display:none}
   dialog.wide{max-width:900px}
   #bulkDlg .stats{grid-template-columns:repeat(4,minmax(0,1fr))}
   .count-bar{bottom:12px}
@@ -342,6 +358,7 @@ body.gated .whbar{display:none!important}
   <!-- 總覽 -->
   <section class="view" data-view="home">
     <div class="page-head"><h2 id="homeTitle">總覽</h2><span class="muted" id="homeDate"></span></div>
+    <div id="homeNotice"></div>
     <div id="homeEmpty" hidden></div>
     <div id="homeBody">
       <div class="kpis" id="homeKpis"></div>
@@ -352,7 +369,7 @@ body.gated .whbar{display:none!important}
       <div class="grid home-grid mt">
         <div class="grid">
           <div class="card"><h3>庫存提醒 <small id="alertCount"></small></h3><div id="alertList"></div></div>
-          <div class="card"><h3>本月賺最多 <small>依毛利排序</small></h3><div id="topList"></div></div>
+          <div class="card" id="topCard"><h3>本月賺最多 <small>依毛利排序</small></h3><div id="topList"></div></div>
         </div>
         <div class="card"><h3>最近紀錄 <button class="link" data-go="log">看全部 ›</button></h3><div id="recentList" class="mlist"></div></div>
       </div>
@@ -407,6 +424,18 @@ body.gated .whbar{display:none!important}
       <div id="logSum" class="muted" style="font-size:.85rem"></div>
       <div class="mlist" id="logList"></div>
     </div>
+  </section>
+
+  <!-- 金額確認（負責人、管理員） -->
+  <section class="view" data-view="price" hidden>
+    <div class="page-head"><h2>金額確認</h2><span class="muted" id="priceSum"></span></div>
+    <div id="priceBody"></div>
+  </section>
+
+  <!-- 後台（負責人） -->
+  <section class="view" data-view="admin" hidden>
+    <div class="page-head"><h2>後台</h2><span class="muted">只有負責人看得到</span></div>
+    <div id="adminBody"></div>
   </section>
 
   <!-- 月覽 -->
@@ -568,7 +597,7 @@ body.gated .whbar{display:none!important}
   const LS_KEY = 'stockbook-v1';
   const COUNT_KEY = 'stockbook-count-draft';
   const $ = s => document.querySelector(s);
-  const state = { products: [], moves: [], members: [], warehouses: [] };
+  const state = { products: [], moves: [], members: [], warehouses: [], prices: {}, money: {}, moneyLog: [] };
   const ui = { view: 'home', stockFilter: 'all', stockQ: '', logType: 'all', logMonth: 'all', logQ: '', month: null, countQ: '', countCat: 'all' };
   const CLOUD = !!CONFIG.firebase;
   const WH_KEY = 'stockbook-wh';
@@ -616,6 +645,15 @@ body.gated .whbar{display:none!important}
   const inScope = (m, wh = scopeWh()) => wh === 'all' || (m.type === 'xfer' ? m.fromWh === wh || m.toWh === wh : whOf(m) === wh);
   const usedInScope = p => { const w = scopeWh(); return w === 'all' || (C.st[p.id] && C.st[p.id].wh[w] !== undefined); };   // 這個倉庫有沒有放過這個商品
   const canManageWh = () => !CLOUD || be.role === 'owner';
+  /* ---------- 角色：owner 負責人 / staff 管理員 / field 現場人員 ---------- */
+  const ROLE_NAME = { owner: '負責人', staff: '管理員', field: '現場人員' };
+  const isOwnerRole = () => !CLOUD || be.role === 'owner';
+  const canMoney = () => !CLOUD || be.role === 'owner' || be.role === 'staff';   // 看得到 / 改得到金額
+  // 價格：雲端存在受保護的 prices / money；單機或尚未轉換的舊資料存在商品 / 紀錄本身
+  const pCost = p => { const x = state.prices[p.id]; return x && x.cost != null ? x.cost : p.cost; };
+  const pPrice = p => { const x = state.prices[p.id]; return x && x.price != null ? x.price : p.price; };
+  const hasPrice = p => pCost(p) != null || pPrice(p) != null;
+  const px = m => C.px[m.id] ?? num(m.price);
 
   let toastTimer;
   function toast(msg) { const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => t.hidden = true, 2800); }
@@ -644,10 +682,17 @@ body.gated .whbar{display:none!important}
   function addMoves(list) {
     list = list.map(m => clean(stamp(m)));
     if (!CLOUD) { state.moves.push(...list); localSave(); render(); return; }
-    const { db, F } = fb;
-    for (let i = 0; i < list.length; i += 400) {
+    const { db, F } = fb, mgr = canMoney();
+    // 雲端：金額不存在紀錄裡，另外存到只有負責人 / 管理員讀得到的 money；現場人員不寫金額（之後自動帶價）
+    const ops = [];
+    for (const m of list) {
+      const { price, ...rest } = m;
+      ops.push(['moves', m.id, { ...rest, serverAt: F.serverTimestamp() }]);
+      if (mgr && price != null && (m.type === 'in' || m.type === 'out')) ops.push(['money', m.id, { price: num(price), confirmed: true, by: be.user.email, at: Date.now() }]);
+    }
+    for (let i = 0; i < ops.length; i += 400) {
       const b = F.writeBatch(db);
-      list.slice(i, i + 400).forEach(m => b.set(F.doc(db, 'moves', m.id), { ...m, serverAt: F.serverTimestamp() }));
+      ops.slice(i, i + 400).forEach(([c, id, d]) => b.set(F.doc(db, c, id), d));
       b.commit().catch(cloudErr);   // 離線時會先存在本機，恢復連線後自動上傳
     }
   }
@@ -656,10 +701,35 @@ body.gated .whbar{display:none!important}
     list = list.map(p => clean({ ...p, updatedAt: Date.now(), updatedBy: be.user?.email || '' }));
     if (!list.length) return;
     if (!CLOUD) { for (const p of list) { const i = state.products.findIndex(x => x.id === p.id); if (i >= 0) state.products[i] = p; else state.products.push(p); } localSave(); render(); return; }
-    const { db, F } = fb;
-    for (let i = 0; i < list.length; i += 400) { const b = F.writeBatch(db); list.slice(i, i + 400).forEach(p => b.set(F.doc(db, 'products', p.id), p)); b.commit().catch(cloudErr); }
+    const { db, F } = fb, mgr = canMoney(), ops = [];
+    for (const p of list) {
+      const { cost, price, ...rest } = p;
+      ops.push(['products', p.id, rest]);
+      if (mgr && (cost != null || price != null)) {
+        const old = state.prices[p.id] || {};
+        const nv = { cost: cost != null ? num(cost) : (old.cost ?? null), price: price != null ? num(price) : (old.price ?? null) };
+        if (nv.cost !== (old.cost ?? null) || nv.price !== (old.price ?? null)) {
+          ops.push(['prices', p.id, { ...nv, by: be.user.email, at: Date.now() }]);
+          if (state.prices[p.id]) logMoney(ops, 'product', p.id, rest.name, `成本 ${old.cost ?? '—'}／售價 ${old.price ?? '—'}`, `成本 ${nv.cost ?? '—'}／售價 ${nv.price ?? '—'}`);
+        }
+      }
+    }
+    for (let i = 0; i < ops.length; i += 400) { const b = F.writeBatch(db); ops.slice(i, i + 400).forEach(([c, id, d]) => b.set(F.doc(db, c, id), d)); b.commit().catch(cloudErr); }
+  }
+  // 金額修改紀錄（只增不改）
+  function logMoney(ops, kind, id, label, from, to) {
+    ops.push(['moneyLog', uid(), { kind, targetId: id, label: label || '', from: String(from), to: String(to), by: be.user?.email || '', byName: be.user?.name || '', at: Date.now() }]);
+  }
+  // 確認 / 修改單筆紀錄的單價（負責人、管理員）
+  function setMovePrice(m, price, isEdit) {
+    const p = prodById(m.productId), label = `${dLabel(m.date)} ${TYPE_NAME[m.type]} ${p?.name || ''} × ${qf(m.qty)}`;
+    if (!CLOUD) { m.price = num(price); localSave(); render(); return; }
+    const { db, F } = fb, ops = [['money', m.id, { price: num(price), confirmed: true, by: be.user.email, at: Date.now() }]];
+    if (isEdit) logMoney(ops, 'move', m.id, label, money(px(m)), money(num(price)));
+    const b = F.writeBatch(db); ops.forEach(([c, id, d]) => b.set(F.doc(db, c, id), d)); b.commit().catch(cloudErr);
   }
   const putProduct = p => putProducts([p]);
+  const stripMoney = p => { if (!canMoney()) { delete p.cost; delete p.price; } return p; };
   // 倉庫主檔（不刪除，只停用）
   function putWarehouse(w) {
     w = clean({ ...w, updatedAt: Date.now(), updatedBy: be.user?.email || '' });
@@ -679,7 +749,7 @@ body.gated .whbar{display:none!important}
     const logo = `<svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linejoin="round"><path d="M3 8 12 3l9 5v8l-9 5-9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg>`;
     if (kind === 'loading') g.innerHTML = `${logo}<p>連線中…</p>`;
     else if (kind === 'login') g.innerHTML = `${logo}<p style="font-size:1.1rem;color:var(--ink);margin:8px 0 2px"><b>登入進出貨管家</b></p><p style="margin:0">請用負責人加入的 Google 帳號登入，大家會看到同一份資料。</p><button class="btn primary" data-act="login" style="margin-top:14px">用 Google 帳號登入</button>`;
-    else if (kind === 'denied') g.innerHTML = `${logo}<p style="font-size:1.1rem;color:var(--ink);margin:8px 0 2px"><b>這個帳號還沒有使用權限</b></p><p style="margin:0">${esc(be.user?.email || '')}<br>請負責人到「設定 → 成員」加入這個 Gmail，加入後重新整理即可。</p><button class="btn" data-act="logout" style="margin-top:14px">換一個帳號登入</button>`;
+    else if (kind === 'denied') g.innerHTML = `${logo}<p style="font-size:1.1rem;color:var(--ink);margin:8px 0 2px"><b>這個帳號還沒有使用權限</b></p><p style="margin:0">${esc(be.user?.email || '')}<br>請負責人到「後台 → 成員與角色」加入這個 Gmail，加入後重新整理即可。</p><button class="btn" data-act="logout" style="margin-top:14px">換一個帳號登入</button>`;
     else g.innerHTML = `${logo}<p style="font-size:1.1rem;color:var(--ink);margin:8px 0 2px"><b>無法連線到雲端</b></p><p style="margin:0">${esc(extra || '請確認網路後重新整理。')}</p><button class="btn" onclick="location.reload()" style="margin-top:14px">重新整理</button>`;
   }
 
@@ -694,10 +764,23 @@ body.gated .whbar{display:none!important}
     const e = be.user?.email; if (!e) return null;
     if (CONFIG.ownerEmail && e === CONFIG.ownerEmail.trim().toLowerCase()) return 'owner';
     const m = state.members.find(x => x.email === e);
-    return m ? (m.role === 'owner' ? 'owner' : 'staff') : null;
+    return m ? (m.role === 'owner' ? 'owner' : m.role === 'field' ? 'field' : 'staff') : null;
   }
 
-  function stopListeners() { unsubs.forEach(u => u()); unsubs = []; }
+  let moneyUnsubs = [];
+  function stopListeners() { unsubs.forEach(u => u()); unsubs = []; stopMoney(); }
+  function stopMoney() { moneyUnsubs.forEach(u => u()); moneyUnsubs = []; state.prices = {}; state.money = {}; state.moneyLog = []; }
+  // 只有負責人 / 管理員才去讀金額（現場人員的裝置根本不會收到）
+  function syncMoneyListeners() {
+    if (!CLOUD || !fb) return;
+    const want = canMoney();
+    if (!want) { if (moneyUnsubs.length) stopMoney(); return; }
+    if (moneyUnsubs.length) return;
+    const { db, F } = fb;
+    moneyUnsubs.push(F.onSnapshot(F.collection(db, 'prices'), s => { state.prices = Object.fromEntries(s.docs.map(d => [d.id, d.data()])); scheduleRender(); }, () => {}));
+    moneyUnsubs.push(F.onSnapshot(F.collection(db, 'money'), s => { state.money = Object.fromEntries(s.docs.map(d => [d.id, d.data()])); scheduleRender(); }, () => {}));
+    if (be.role === 'owner') moneyUnsubs.push(F.onSnapshot(F.collection(db, 'moneyLog'), s => { state.moneyLog = s.docs.map(d => ({ ...d.data(), id: d.id })).sort((a, b) => b.at - a.at); if (ui.view === 'admin') scheduleRender(); }, () => {}));
+  }
   function startListeners() {
     const { db, F } = fb;
     got = { products: false, moves: false }; pend = {};
@@ -713,7 +796,7 @@ body.gated .whbar{display:none!important}
     }, onErr));
     unsubs.push(F.onSnapshot(F.collection(db, 'members'), snap => {
       state.members = snap.docs.map(d => ({ ...d.data(), email: d.id }));
-      be.role = computeRole(); if ($('#setDlg').open) renderSettings();
+      be.role = computeRole(); syncMoneyListeners(); scheduleRender(); if ($('#setDlg').open) renderSettings();
     }, () => {}));
     unsubs.push(F.onSnapshot(F.collection(db, 'warehouses'), snap => {
       state.warehouses = snap.docs.map(d => ({ ...d.data(), id: d.id }));
@@ -738,7 +821,7 @@ body.gated .whbar{display:none!important}
       if (!user) { be.user = null; be.role = null; gate('login'); return; }
       be.user = { email: (user.email || '').toLowerCase(), name: user.displayName || user.email || '' };
       be.role = computeRole();
-      gate('loading'); startListeners();
+      gate('loading'); startListeners(); syncMoneyListeners();
     });
   }
   async function login() {
@@ -770,13 +853,22 @@ body.gated .whbar{display:none!important}
   const liveMoves = () => records().filter(m => !V[m.id]);                  // 計算用
 
   function compute(exclude) {
-    const st = {}, cogs = {}, adjv = {};
-    for (const p of state.products) st[p.id] = { stock: 0, avg: num(p.cost), outQty: 0, rev: 0, cogs: 0, lastIn: null, adj: 0, wh: {} };
+    const st = {}, cogs = {}, adjv = {}, pxm = {}, auto = {};
+    for (const p of state.products) st[p.id] = { stock: 0, avg: num(pCost(p)), outQty: 0, rev: 0, cogs: 0, lastIn: null, adj: 0, wh: {} };
     const addWh = (s, w, q) => { s.wh[w] = (s.wh[w] || 0) + q; };
     for (const m of sortedMoves(liveMoves())) {
       if (m.id === exclude) continue;
       const s = st[m.productId]; if (!s) continue;
-      const q = num(m.qty), pr = num(m.price);
+      const q = num(m.qty);
+      let pr = 0;
+      if (m.type === 'in' || m.type === 'out') {
+        const mo = state.money[m.id];
+        if (mo && mo.price != null) pr = num(mo.price);
+        else if (m.price != null) pr = num(m.price);
+        else if (m.copyPriceOf && (state.money[m.copyPriceOf]?.price != null || state.moves.find(x => x.id === m.copyPriceOf)?.price != null)) pr = num(state.money[m.copyPriceOf]?.price ?? state.moves.find(x => x.id === m.copyPriceOf).price);   // 沖銷並重記：沿用原紀錄單價
+        else { const p = prodById(m.productId); pr = m.type === 'in' ? (s.lastIn ?? num(pCost(p))) : num(pPrice(p)); auto[m.id] = true; }   // 自動帶價（未確認）
+        pxm[m.id] = pr;
+      }
       if (m.type === 'in') {
         const ns = s.stock + q;
         s.avg = s.stock > 0 && ns > 0 ? (s.stock * s.avg + q * pr) / ns : pr;
@@ -791,7 +883,7 @@ body.gated .whbar{display:none!important}
         addWh(s, m.fromWh, -q); addWh(s, m.toWh, q);
       }
     }
-    return { st, cogs, adjv };
+    return { st, cogs, adjv, px: pxm, auto };
   }
   let C = compute();
 
@@ -809,7 +901,7 @@ body.gated .whbar{display:none!important}
     for (const m of liveMoves()) {
       if (!m.date.startsWith(ym) || m.type === 'xfer' || (wh !== 'all' && whOf(m) !== wh)) continue;
       const b = r.by[m.productId] ||= { inQty: 0, inAmt: 0, outQty: 0, rev: 0, cogs: 0, adj: 0 };
-      const q = num(m.qty), amt = q * num(m.price);
+      const q = num(m.qty), amt = q * px(m);
       if (m.type === 'in') { r.inAmt += amt; r.inQty += q; r.inCount++; b.inQty += q; b.inAmt += amt; }
       else if (m.type === 'out') { const c = C.cogs[m.id] || 0; r.rev += amt; r.cogs += c; r.outQty += q; r.outCount++; b.outQty += q; b.rev += amt; b.cogs += c; }
       else if (m.type === 'adj') { const v = C.adjv[m.id] || 0; r.adj += v; r.adjCount++; b.adj += v; }
@@ -824,18 +916,24 @@ body.gated .whbar{display:none!important}
     { id: 'stock', label: '庫存', icon: '<path d="M3 8 12 3l9 5v8l-9 5-9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/>' },
     { id: 'count', label: '盤點', tab: false },
     { id: 'log', label: '明細', icon: '<path d="M8 6h13M8 12h13M8 18h13"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/>' },
-    { id: 'month', label: '月覽', icon: '<path d="M4 20V10M10 20V4M16 20v-8M22 20H2"/>' },
+    { id: 'month', label: '月覽', icon: '<path d="M4 20V10M10 20V4M16 20v-8M22 20H2"/>', ok: () => canMoney() },
+    { id: 'price', label: '金額確認', tab: false, ok: () => CLOUD && canMoney() },
+    { id: 'admin', label: '後台', tab: false, ok: () => isOwnerRole() },
   ];
+  const viewOk = id => { const v = VIEWS.find(x => x.id === id); return !!v && (!v.ok || v.ok()); };
   const svgI = p => `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
   function renderNav(alerts) {
-    const dot = id => id === 'stock' && alerts ? alerts : 0;
+    const pend = CLOUD && canMoney() ? pendingPrice().total : 0;
+    const dot = id => id === 'stock' && alerts ? alerts : id === 'price' && pend ? pend : 0;
     const cur = id => ui.view === id;
-    $('#topnav').innerHTML = VIEWS.map(v => `<button data-go="${v.id}" ${cur(v.id) ? 'aria-current="page"' : ''}>${v.label}${dot(v.id) ? `<span class="dot">${dot(v.id)}</span>` : ''}</button>`).join('');
-    const T = VIEWS.filter(v => v.tab !== false);
+    $('#topnav').innerHTML = VIEWS.filter(v => !v.ok || v.ok()).map(v => `<button data-go="${v.id}" ${cur(v.id) ? 'aria-current="page"' : ''}>${v.label}${dot(v.id) ? `<span class="dot">${dot(v.id)}</span>` : ''}</button>`).join('');
+    const T = VIEWS.filter(v => v.tab !== false && (!v.ok || v.ok()));
     const tab = v => `<button class="tab" data-go="${v.id}" ${ui.view === v.id || (v.id === 'stock' && ui.view === 'count') ? 'aria-current="page"' : ''}>${svgI(v.icon)}<span>${v.label}</span>${dot(v.id) ? `<span class="dot">${dot(v.id)}</span>` : ''}</button>`;
-    $('#tabbar').innerHTML = tab(T[0]) + tab(T[1]) + `<button class="tab add" data-act="new-move"><span class="plus">${svgI('<path d="M12 5v14M5 12h14"/>').replace('currentColor', '#fff')}</span><span>記一筆</span></button>` + tab(T[2]) + tab(T[3]);
+    $('#tabbar').innerHTML = tab(T[0]) + tab(T[1]) + `<button class="tab add" data-act="new-move"><span class="plus">${svgI('<path d="M12 5v14M5 12h14"/>').replace('currentColor', '#fff')}</span><span>記一筆</span></button>` + T.slice(2).map(tab).join('');
+    $('#tabbar').style.gridTemplateColumns = `repeat(${T.length + 1},1fr)`;
   }
   function go(v) {
+    if (!viewOk(v)) v = 'home';
     ui.view = v; document.body.classList.toggle('v-count', v === 'count');
     document.querySelectorAll('.view').forEach(s => s.hidden = s.dataset.view !== v);
     try { localStorage.setItem(LS_KEY + '-view', v); } catch (e) {}
@@ -847,6 +945,8 @@ body.gated .whbar{display:none!important}
     if (document.body.classList.contains('gated')) return;
     buildVoids();
     C = compute();
+    document.body.classList.toggle('nomoney', !canMoney());
+    if (!viewOk(ui.view)) { go('home'); return; }
     const alerts = state.products.filter(p => usedInScope(p) && ['bad', 'warn'].includes(statusOf(p).key)).length;
     renderNav(alerts);
     renderWhBar();
@@ -855,6 +955,8 @@ body.gated .whbar{display:none!important}
     if (ui.view === 'count') renderCount();
     if (ui.view === 'log') renderLog();
     if (ui.view === 'month') renderMonth();
+    if (ui.view === 'price') renderPrice();
+    if (ui.view === 'admin') renderAdmin();
     if ($('#moveDlg').open && !md.readonly) updateMoveSummary();
   }
 
@@ -871,15 +973,16 @@ body.gated .whbar{display:none!important}
   function moveRow(m, showDate) {
     const p = prodById(m.productId) || { name: '（找不到商品）', unit: '' };
     const voided = !!V[m.id];
-    const amt = num(m.qty) * num(m.price);
+    const amt = num(m.qty) * px(m);
     const whTxt = m.type === 'xfer' ? `${whName(m.fromWh)} → ${whName(m.toWh)}` : multiWh() || whOf(m) !== MAIN_WH ? whName(whOf(m)) : '';
     const tt = occTime(m);
     const sub = [showDate ? dLabel(m.date) + (tt ? ' ' + tt : '') : tt, whTxt, m.party, m.note, who(m)].filter(Boolean).join(' · ');
     let right;
-    if (m.type === 'xfer') right = `<b>${qf(m.qty)}</b><small>${voided ? '已沖銷' : '調撥'}</small>`;
+    if (!canMoney()) right = `<b>${m.type === 'adj' ? sq(m.qty) : qf(m.qty)}</b><small>${voided ? '已沖銷' : m.type === 'adj' ? (m.qty > 0 ? '盤盈' : '盤虧') : TYPE_NAME[m.type]}</small>`;
+    else if (m.type === 'xfer') right = `<b>${qf(m.qty)}</b><small>${voided ? '已沖銷' : '調撥'}</small>`;
     else if (m.type === 'adj') { const v = C.adjv[m.id]; right = `<b>${voided ? '—' : money(v)}</b><small>${voided ? '已沖銷' : (m.qty > 0 ? '盤盈' : '盤虧')}</small>`; }
     else if (voided) right = `<b>${money(amt)}</b><small>已沖銷</small>`;
-    else right = `<b>${money(amt)}</b>${m.type === 'out' ? `<small>毛利 ${money(amt - (C.cogs[m.id] || 0))}</small>` : `<small>@ ${money(m.price)}</small>`}`;
+    else right = `<b>${money(amt)}</b>${m.type === 'out' ? `<small>毛利 ${money(amt - (C.cogs[m.id] || 0))}${C.auto[m.id] ? '・待確認' : ''}</small>` : `<small>@ ${money(px(m))}${C.auto[m.id] ? '・待確認' : ''}</small>`}`;
     const badge = { in: '進', out: '出', adj: '盤', xfer: '調' }[m.type];
     const q = m.type === 'adj' ? sq(m.qty) : '× ' + qf(m.qty);
     return `<button class="mrow${voided ? ' voided' : ''}" data-act="view-move" data-id="${m.id}">
@@ -901,12 +1004,20 @@ body.gated .whbar{display:none!important}
     const empty = !state.products.length;
     $('#homeEmpty').hidden = !empty; $('#homeBody').hidden = empty;
     if (empty) { $('#homeEmpty').innerHTML = emptyStart(); return; }
+    const pp = CLOUD && canMoney() ? pendingPrice() : null;
+    $('#homeNotice').innerHTML = pp && pp.total ? `<div class="info warn" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><span>有 <b>${pp.total}</b> 筆金額待確認（${pp.moves.length} 筆自動帶價、${pp.prods.length} 項商品未設價格）</span><button class="btn small" data-go="price">去確認</button></div>` : '';
+    $('#topCard').hidden = !canMoney();
+    if (!canMoney()) {
+      const act = state.products.filter(isActive), td = liveMoves().filter(m => m.date === today() && inScope(m));
+      $('#homeKpis').innerHTML = kpi('商品數', act.length, scopeLabel()) + kpi('低庫存', act.filter(p => usedInScope(p) && statusOf(p).key === 'warn').length, '低於安全庫存') + kpi('缺貨', act.filter(p => usedInScope(p) && statusOf(p).key === 'bad').length, '庫存 0 或以下') + kpi('今日紀錄', td.length, `進 ${td.filter(m => m.type === 'in').length}・出 ${td.filter(m => m.type === 'out').length}`);
+    } else {
     const ym = thisYM(), ms = monthStats(ym), last = monthStats(addMonth(ym, -1));
     $('#homeKpis').innerHTML =
       kpi('本月營業額', money(ms.rev), `上月 ${money(last.rev)}`) +
       kpi('本月毛利', money(ms.profit), `毛利率 ${pct(ms.profit, ms.rev)}`, ms.profit < 0 ? 'neg' : 'pos') +
       kpi('本月進貨', money(ms.inAmt), `${ms.inCount} 筆進貨`) +
       kpi('目前庫存價值', money(stockValue()), `${scopeLabel() ? scopeLabel() + '・' : ''}共 ${state.products.filter(isActive).length} 項商品`);
+    }
 
     const al = state.products.filter(usedInScope).map(p => ({ p, s: statusOf(p) })).filter(x => x.s.key === 'bad' || x.s.key === 'warn').sort((a, b) => (a.s.key === 'bad' ? 0 : 1) - (b.s.key === 'bad' ? 0 : 1) || qtyIn(a.p.id) - qtyIn(b.p.id));
     $('#alertCount').textContent = al.length ? `${al.length} 項要注意` : '';
@@ -916,6 +1027,7 @@ body.gated .whbar{display:none!important}
         <button class="btn small in" data-act="new-move" data-type="in" data-pid="${p.id}">補貨</button></div>`).join('')
       : `<div class="ok-box"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m5 12 5 5 9-10"/></svg>目前每樣商品庫存都充足</div>`;
 
+    const ms = monthStats(thisYM());
     const top = Object.entries(ms.by).map(([id, b]) => ({ p: prodById(id), profit: b.rev - b.cogs, rev: b.rev })).filter(x => x.p && x.rev > 0).sort((a, b) => b.profit - a.profit).slice(0, 5);
     const maxP = Math.max(...top.map(t => Math.abs(t.profit)), 1);
     $('#topList').innerHTML = top.length ? `<div class="rank">${top.map(t => `<div><div class="rk-top"><span>${esc(t.p.name)}</span><span class="num">${money(t.profit)} <span class="muted">/ 營業額 ${money(t.rev)}</span></span></div><div class="rk-bar"><i style="width:${Math.max(2, Math.abs(t.profit) / maxP * 100)}%"></i></div></div>`).join('')}</div>`
@@ -930,7 +1042,7 @@ body.gated .whbar{display:none!important}
     const all = state.products.map(p => ({ p, s: statusOf(p), c: C.st[p.id] }));
     const act = all.filter(x => x.s.key !== 'off');
     const cnt = k => all.filter(x => x.s.key === k).length;
-    $('#stockKpis').innerHTML = kpi('商品數', act.length, cnt('off') ? `另有 ${cnt('off')} 項停用` : '') + kpi('庫存總價值', money(stockValue()), (scopeLabel() ? scopeLabel() + '・' : '') + '以平均成本計算') + kpi('低庫存', cnt('warn'), '低於安全庫存') + kpi('缺貨', cnt('bad'), '庫存 0 或以下', cnt('bad') ? 'neg' : '');
+    $('#stockKpis').innerHTML = kpi('商品數', act.length, cnt('off') ? `另有 ${cnt('off')} 項停用` : '') + (canMoney() ? kpi('庫存總價值', money(stockValue()), (scopeLabel() ? scopeLabel() + '・' : '') + '以平均成本計算') : kpi('充足', cnt('good'), scopeLabel() || '高於安全庫存')) + kpi('低庫存', cnt('warn'), '低於安全庫存') + kpi('缺貨', cnt('bad'), '庫存 0 或以下', cnt('bad') ? 'neg' : '');
     const F = [['all', '全部', act.length], ['warn', '低庫存', cnt('warn')], ['bad', '缺貨', cnt('bad')], ['good', '充足', cnt('good')]];
     if (cnt('off')) F.push(['off', '已停用', cnt('off')]);
     if (ui.stockFilter === 'off' && !cnt('off')) ui.stockFilter = 'all';
@@ -941,7 +1053,7 @@ body.gated .whbar{display:none!important}
     if (!state.products.length) { $('#productList').innerHTML = emptyStart(); return; }
     $('#productList').innerHTML = list.length ? list.map(({ p, s, c }) => `<button class="prow" data-act="edit-product" data-id="${p.id}">
         <span style="min-width:0"><div class="nm">${esc(p.name)}</div><div class="sub">${codeTag(p)}${esc([p.spec, p.category].filter(Boolean).join(' · ') || (p.code ? '' : '—'))}${scopeWh() === 'all' && multiWh() ? `<span class="whsplit">${esc(whSplit(p.id))}</span>` : ''}</div></span>
-        <span class="ex num">${money(c.avg)}</span><span class="ex num">${money(p.price)}</span><span class="ex num">${money(Math.max(0, qtyIn(p.id)) * c.avg)}</span>
+        ${canMoney() ? `<span class="ex num">${money(c.avg)}</span><span class="ex num">${pPrice(p) != null ? money(pPrice(p)) : '<span class="muted">未設</span>'}</span><span class="ex num">${money(Math.max(0, qtyIn(p.id)) * c.avg)}</span>` : ''}
         <span class="qty num"><b>${qf(qtyIn(p.id))}</b><span>${esc(p.unit || '')}</span></span>
         <span class="st"><span class="chip ${s.key}">${s.label}</span></span></button>`).join('')
       : `<div class="empty">找不到符合的商品${q ? `<br><button class="btn primary" data-act="new-product" data-code="${esc(ui.stockQ.trim())}">＋ 用「${esc(ui.stockQ.trim())}」當品號新增商品</button>` : ''}</div>`;
@@ -958,8 +1070,9 @@ body.gated .whbar{display:none!important}
     const F = [['all', '全部', base.length], ['in', '進貨', n('in')], ['out', '出貨', n('out')], ['adj', '盤點', n('adj')], ...(multiWh() || n('xfer') ? [['xfer', '調撥', n('xfer')]] : []), ['void', '已沖銷', base.filter(m => V[m.id]).length]];
     $('#logFilters').innerHTML = F.map(([k, l, c]) => `<button class="fchip" data-lf="${k}" aria-pressed="${ui.logType === k}">${l}<span class="n">${c}</span></button>`).join('');
     const list = sortedMoves(base.filter(m => ui.logType === 'all' || (ui.logType === 'void' ? V[m.id] : m.type === ui.logType && !V[m.id]))).reverse();
-    let inA = 0, outA = 0, adjA = 0; list.forEach(m => { if (V[m.id]) return; if (m.type === 'in') inA += m.qty * m.price; else if (m.type === 'out') outA += m.qty * m.price; else if (m.type === 'adj') adjA += C.adjv[m.id] || 0; });
-    $('#logSum').innerHTML = list.length ? `共 ${list.length} 筆　進貨 <b class="num">${money(inA)}</b>　出貨 <b class="num">${money(outA)}</b>${adjA ? `　盤點盈虧 <b class="num">${money(adjA)}</b>` : ''}` : '';
+    let inA = 0, outA = 0, adjA = 0; list.forEach(m => { if (V[m.id]) return; if (m.type === 'in') inA += m.qty * px(m); else if (m.type === 'out') outA += m.qty * px(m); else if (m.type === 'adj') adjA += C.adjv[m.id] || 0; });
+    if (!canMoney()) $('#logSum').innerHTML = list.length ? `共 ${list.length} 筆　進貨 ${list.filter(m => m.type === 'in' && !V[m.id]).length} 筆　出貨 ${list.filter(m => m.type === 'out' && !V[m.id]).length} 筆` : '';
+    else $('#logSum').innerHTML = list.length ? `共 ${list.length} 筆　進貨 <b class="num">${money(inA)}</b>　出貨 <b class="num">${money(outA)}</b>${adjA ? `　盤點盈虧 <b class="num">${money(adjA)}</b>` : ''}` : '';
     if (!list.length) { $('#logList').innerHTML = `<div class="empty">${recs.length ? '沒有符合條件的紀錄' : '還沒有任何進出貨紀錄'}<br><button class="btn primary" data-act="new-move">＋ 記一筆</button></div>`; return; }
     let html = '', cur = '';
     for (const m of list) {
@@ -1091,7 +1204,7 @@ body.gated .whbar{display:none!important}
     $('#mProduct').value = src ? src.productId : (opts.pid || '');
     $('#mCode').value = (src ? p?.code : prodById(opts.pid)?.code) || '';
     $('#mQty').value = src ? src.qty : '';
-    $('#mPrice').value = src ? src.price : '';
+    $('#mPrice').value = src && (src.type === 'in' || src.type === 'out') ? px(src) : '';
     $('#mParty').value = src?.party || '';
     $('#mDate').value = src?.date || today();
     $('#mTime').value = src ? occTime(src) : nowHM();
@@ -1133,7 +1246,7 @@ body.gated .whbar{display:none!important}
     $('#mWhWrap').hidden = !x && !multiWh() && $('#mWh').value === MAIN_WH;
     $('#mWh2Wrap').hidden = !x;
     $('#mWhLbl').textContent = x ? '從哪個倉庫調出' : t === 'in' ? '進到哪個倉庫' : t === 'out' ? '從哪個倉庫出貨' : '倉庫';
-    $('#mPrice').closest('div').hidden = x;
+    $('#mPrice').closest('div').hidden = x || !canMoney();
     $('#mParty').closest('div').hidden = x;
     $('#mPartyLbl').textContent = t === 'in' ? '供應商' : t === 'out' ? '客戶' : '對象';
     $('#mPriceLbl').textContent = t === 'in' ? '進貨單價' : t === 'out' ? '出貨單價（售價）' : '當時平均成本';
@@ -1149,7 +1262,7 @@ body.gated .whbar{display:none!important}
   function fillPrice() {
     const p = prodById($('#mProduct').value); if (!p || md.type === 'xfer') { if (!p) $('#mPrice').value = ''; return; }
     const c = C.st[p.id];
-    $('#mPrice').value = md.type === 'in' ? (c.lastIn ?? num(p.cost)) || '' : num(p.price) || '';
+    $('#mPrice').value = md.type === 'in' ? (c.lastIn ?? num(pCost(p))) || '' : num(pPrice(p)) || '';
   }
   const stockColor = (v, p) => v <= 0 ? 'var(--bad)' : v <= num(p.safety) ? 'var(--warn)' : 'inherit';
   function updateMoveSummary() {
@@ -1159,9 +1272,11 @@ body.gated .whbar{display:none!important}
     if (md.readonly) {
       const m = md.view;
       $('#mStockHint').textContent = p ? `目前庫存 ${qf(C.st[p.id].stock)} ${p.unit || ''}` + (showWh ? `（${whSplit(p.id)}）` : '') : '';
+      if (!canMoney()) { $('#mSummary').innerHTML = `<div><span>${TYPE_NAME[m.type]}</span><span class="big num">${m.type === 'adj' ? sq(m.qty) : qf(m.qty)} ${esc(p?.unit || '')}</span></div>` + (m.type === 'xfer' ? `<div><span class="muted">路線</span><span>${esc(whName(m.fromWh))} → ${esc(whName(m.toWh))}</span></div>` : ''); return; }
       if (m.type === 'xfer') { $('#mSummary').innerHTML = `<div><span>調撥</span><span class="big num">${qf(m.qty)} ${esc(p?.unit || '')}</span></div><div><span class="muted">路線</span><span>${esc(whName(m.fromWh))} → ${esc(whName(m.toWh))}</span></div>`; return; }
       const amt = m.type === 'adj' ? C.adjv[m.id] : q * pr;
-      $('#mSummary').innerHTML = `<div><span>${m.type === 'adj' ? '盤點盈虧（數量 ' + sq(m.qty) + '）' : '金額'}</span><span class="big num">${V[m.id] ? '—' : money(amt)}</span></div>` + (m.type === 'out' && !V[m.id] ? `<div><span class="muted">毛利</span><span class="num">${money(amt - (C.cogs[m.id] || 0))}</span></div>` : '');
+      $('#mSummary').innerHTML = `<div><span>${m.type === 'adj' ? '盤點盈虧（數量 ' + sq(m.qty) + '）' : '金額'}</span><span class="big num">${V[m.id] ? '—' : money(amt)}</span></div>` + (m.type === 'out' && !V[m.id] ? `<div><span class="muted">毛利</span><span class="num">${money(amt - (C.cogs[m.id] || 0))}</span></div>` : '')
+        + ((m.type === 'in' || m.type === 'out') && !V[m.id] ? `<div><span class="muted">單價 ${money(px(m))}${C.auto[m.id] ? '（自動帶入・待確認）' : ''}</span><span>${C.auto[m.id] ? `<button type="button" class="btn small" data-pact="confirm" data-id="${m.id}">確認</button> ` : ''}<button type="button" class="btn small" data-pact="edit" data-id="${m.id}">修改單價</button></span></div>` : '');
       return;
     }
     if (!p) { $('#mStockHint').textContent = ''; $('#mSummary').innerHTML = `<div><span class="muted">選好商品後，這裡會顯示庫存變化</span></div>`; return; }
@@ -1179,8 +1294,8 @@ body.gated .whbar{display:none!important}
     const short = md.type === 'out' && q > cur;
     $('#mStockHint').className = 'hint' + (short ? ' bad' : '');
     $('#mStockHint').innerHTML = `${wl}目前庫存 <b class="num">${qf(cur)}</b> ${u}` + (short ? `　⚠ 庫存不夠出這麼多` : '') + (showWh && multiWh() ? `<br><span class="muted">${esc(whSplit(p.id))}</span>` : '');
-    let h = `<div><span>小計</span><span class="big num">${money(q * pr)}</span></div><div><span class="muted">${wl}庫存</span><span class="num">${qf(cur)} → <b style="color:${stockColor(after, p)}">${qf(after)}</b> ${u}</span></div>`;
-    if (md.type === 'out' && q > 0) { const gp = q * (pr - s.avg); h += `<div><span class="muted">預估毛利</span><span class="num" style="color:${gp < 0 ? 'var(--bad)' : 'var(--good)'}">${money(gp)}（${pct(gp, q * pr)}）</span></div>`; }
+    let h = `${canMoney() ? `<div><span>小計</span><span class="big num">${money(q * pr)}</span></div>` : ''}<div><span class="muted">${wl}庫存</span><span class="num">${qf(cur)} → <b style="color:${stockColor(after, p)}">${qf(after)}</b> ${u}</span></div>`;
+    if (md.type === 'out' && q > 0 && canMoney()) { const gp = q * (pr - s.avg); h += `<div><span class="muted">預估毛利</span><span class="num" style="color:${gp < 0 ? 'var(--bad)' : 'var(--good)'}">${money(gp)}（${pct(gp, q * pr)}）</span></div>`; }
     $('#mSummary').innerHTML = h;
   }
   function applyMoveCode(code) {
@@ -1219,9 +1334,9 @@ body.gated .whbar{display:none!important}
     if ((md.type === 'out' || x) && q > cur && !confirm(`${wl}目前庫存只有 ${qf(cur)}，確定要${x ? '調出' : '出貨'} ${qf(q)} 嗎？\n（庫存會變成負數，代表帳上少貨，之後記得補進貨或盤點）`)) return;
     const base = { id: uid(), createdAt: Date.now(), type: md.type, productId: pid, qty: q, date: $('#mDate').value || today(), time: $('#mTime').value || nowHM(), note: $('#mNote').value.trim() };
     const rec = x ? { ...base, fromWh: w1, toWh: w2, price: Math.round(cc.st[pid].avg * 100) / 100, party: '' }
-                  : { ...base, warehouseId: w1, price: pr, party: $('#mParty').value.trim() };
+                  : { ...base, warehouseId: w1, ...(canMoney() ? { price: pr } : {}), party: $('#mParty').value.trim() };
     const list = [];
-    if (md.replacing) { if (V[md.replacing.id]) { toast('原紀錄已經被沖銷了'); $('#moveDlg').close(); return; } list.push(voidRec(md.replacing, '修改重記')); rec.replaces = md.replacing.id; }
+    if (md.replacing) { if (V[md.replacing.id]) { toast('原紀錄已經被沖銷了'); $('#moveDlg').close(); return; } list.push(voidRec(md.replacing, '修改重記')); rec.replaces = md.replacing.id; if (!canMoney() && !x) rec.copyPriceOf = md.replacing.id; }
     list.push(rec);
     try { localStorage.setItem(LASTWH_KEY, w1); } catch (e) {}
     addMoves(list); $('#moveDlg').close();
@@ -1237,6 +1352,14 @@ body.gated .whbar{display:none!important}
     if (!confirm(msg)) return;
     addMoves([voidRec(m, '沖銷')]); $('#moveDlg').close(); toast('已沖銷');
   });
+  $('#mSummary').addEventListener('click', e => {
+    const b = e.target.closest('[data-pact]'); if (!b) return;
+    const m = state.moves.find(x => x.id === b.dataset.id); if (!m) return;
+    if (b.dataset.pact === 'confirm') { setMovePrice(m, px(m), false); toast('已確認單價'); $('#moveDlg').close(); return; }
+    const v = prompt(`修改單價（目前 ${money(px(m))}）`, px(m)); if (v == null) return;
+    const n = parseFloat(v); if (!isFinite(n) || n < 0) { toast('請輸入正確的金額'); return; }
+    setMovePrice(m, n, true); toast('已修改單價，修改紀錄已保存'); $('#moveDlg').close();
+  });
   $('#mRedo').addEventListener('click', () => { const m = md.view; $('#moveDlg').close(); openMove({ redo: m }); });
 
   /* ---------- 商品 ---------- */
@@ -1246,9 +1369,10 @@ body.gated .whbar{display:none!important}
     $('#prodTitle').textContent = p ? '商品資料' : '新增商品';
     $('#pCode').value = p?.code || preset.code || '';
     $('#pName').value = p?.name || ''; $('#pSpec').value = p?.spec || ''; $('#pCat').value = p?.category || '';
-    $('#pCost').value = p ? p.cost : ''; $('#pPrice').value = p ? p.price : '';
+    $('#pCost').value = p ? pCost(p) ?? '' : ''; $('#pPrice').value = p ? pPrice(p) ?? '' : '';
     $('#pUnit').value = p?.unit || ''; $('#pSafety').value = p ? p.safety : ''; $('#pNote').value = p?.note || ''; $('#pOpen').value = '';
     $('#pOpenWrap').hidden = !!p;
+    $('#pCost').closest('.frow').hidden = !canMoney();
     $('#pOpenWh').innerHTML = whOptions([]); $('#pOpenWh').value = defaultWh(); $('#pOpenWh').closest('div').hidden = !multiWh();
     $('#pToggle').hidden = !p;
     if (p) { $('#pToggle').textContent = isActive(p) ? '停用商品' : '重新啟用'; $('#pToggle').className = 'btn ' + (isActive(p) ? 'danger' : ''); }
@@ -1258,9 +1382,9 @@ body.gated .whbar{display:none!important}
       const hist = sortedMoves(records().filter(m => m.productId === p.id)).reverse();
       $('#prodStats').innerHTML = `<div class="stats">
           <div class="stat"><div class="k">目前庫存</div><div class="v num">${qf(c.stock)} ${u} <span class="chip ${st.key}">${st.label}</span></div></div>
-          <div class="stat"><div class="k">平均成本</div><div class="v num">${money(c.avg)}</div></div>
+          ${canMoney() ? `<div class="stat"><div class="k">平均成本</div><div class="v num">${money(c.avg)}</div></div>
           <div class="stat"><div class="k">累計營業額</div><div class="v num">${money(c.rev)}</div></div>
-          <div class="stat"><div class="k">累計毛利</div><div class="v num">${money(c.rev - c.cogs)}（${pct(c.rev - c.cogs, c.rev)}）</div></div></div>
+          <div class="stat"><div class="k">累計毛利</div><div class="v num">${money(c.rev - c.cogs)}（${pct(c.rev - c.cogs, c.rev)}）</div></div>` : `<div class="stat"><div class="k">安全庫存</div><div class="v num">${qf(p.safety)} ${u}</div></div>`}</div>
         ${multiWh() || Object.keys(c.wh).some(w => w !== MAIN_WH && c.wh[w]) ? `<div class="info"><b>各倉庫庫存</b>${whList().filter(w => w.active !== false || c.wh[w.id]).map(w => `<span>${esc(w.name)}${w.active === false ? '（已停用）' : ''}：<b class="num">${qf(r2(c.wh[w.id] || 0))}</b> ${u}</span>`).join('')}</div>` : ''}
         ${isActive(p) ? `<div class="quick" style="display:grid;margin:0 0 16px;grid-template-columns:repeat(${multiWh() ? 3 : 2},1fr)"><button type="button" class="btn in" data-act="new-move" data-type="in" data-pid="${p.id}">↓ 進貨</button><button type="button" class="btn out" data-act="new-move" data-type="out" data-pid="${p.id}">↑ 出貨</button>${multiWh() ? `<button type="button" class="btn" data-act="new-move" data-type="xfer" data-pid="${p.id}">⇄ 調撥</button>` : ''}</div>` : `<div class="info warn">這個商品已停用：不會出現在記帳與盤點清單，歷史紀錄保留。</div>`}
         <div class="sec-title">基本資料</div>`;
@@ -1278,13 +1402,13 @@ body.gated .whbar{display:none!important}
     const dup = code && state.products.find(x => x !== editingProd && normCode(x.code) === normCode(code));
     if (dup) { toast(`品號「${code}」已經是「${dup.name}」在用`); $('#pCode').focus(); return; }
     if (state.products.some(x => x !== editingProd && x.name === name && (x.spec || '') === $('#pSpec').value.trim()) && !confirm('已經有同名同規格的商品，還是要儲存嗎？')) return;
-    const data = { code, name, spec: $('#pSpec').value.trim(), category: $('#pCat').value.trim(), cost: num($('#pCost').value), price: num($('#pPrice').value), unit: $('#pUnit').value.trim() || '個', safety: $('#pSafety').value === '' ? 5 : num($('#pSafety').value), note: $('#pNote').value.trim() };
-    if (editingProd) { putProduct({ ...editingProd, ...data }); toast('商品已更新'); }
+    const data = { code, name, spec: $('#pSpec').value.trim(), category: $('#pCat').value.trim(), ...(canMoney() ? { cost: num($('#pCost').value), price: num($('#pPrice').value) } : {}), unit: $('#pUnit').value.trim() || '個', safety: $('#pSafety').value === '' ? 5 : num($('#pSafety').value), note: $('#pNote').value.trim() };
+    if (editingProd) { const np = { ...editingProd, ...data }; if (!canMoney()) { delete np.cost; delete np.price; } putProduct(np); toast('商品已更新'); }
     else {
       const p = { id: uid(), createdAt: Date.now(), active: true, createdBy: be.user?.email || '', ...data };
       putProduct(p);
       const open = num($('#pOpen').value);
-      if (open > 0) addMoves([{ id: uid(), createdAt: Date.now(), type: 'in', productId: p.id, warehouseId: $('#pOpenWh').value || MAIN_WH, qty: open, price: p.cost, party: '', date: today(), time: nowHM(), note: '期初庫存' }]);
+      if (open > 0) addMoves([{ id: uid(), createdAt: Date.now(), type: 'in', productId: p.id, warehouseId: $('#pOpenWh').value || MAIN_WH, qty: open, ...(canMoney() ? { price: p.cost } : {}), party: '', date: today(), time: nowHM(), note: '期初庫存' }]);
       toast(`已新增：${name}`);
     }
     $('#prodDlg').close();
@@ -1294,8 +1418,8 @@ body.gated .whbar{display:none!important}
     if (isActive(p)) {
       const s = C.st[p.id].stock;
       if (!confirm(`停用「${p.name}」？\n停用後不會出現在記帳與盤點清單，歷史紀錄與報表都會保留，之後可以重新啟用。${s ? `\n\n⚠ 目前帳上還有 ${qf(s)} ${p.unit || ''}。` : ''}`)) return;
-      putProduct({ ...p, active: false }); toast('已停用商品');
-    } else { putProduct({ ...p, active: true }); toast('已重新啟用'); }
+      putProduct(stripMoney({ ...p, active: false })); toast('已停用商品');
+    } else { putProduct(stripMoney({ ...p, active: true })); toast('已重新啟用'); }
     $('#prodDlg').close();
   });
 
@@ -1330,7 +1454,8 @@ body.gated .whbar{display:none!important}
   }
   function renderCountSum() {
     const s = countSummary(), total = state.products.filter(isActive).length;
-    $('#cSum').innerHTML = `已盤 <b class="num">${s.n}</b> / ${total} 項・差異 <b class="num">${s.diffN}</b> 項<br><span style="color:var(--good)">盤盈 ${sq(s.gainQ)}（${money(s.gainV)}）</span>　<span style="color:var(--bad)">盤虧 ${qf(s.lossQ)}（${money(s.lossV)}）</span>`;
+    const mv = v => canMoney() ? `（${money(v)}）` : '';
+    $('#cSum').innerHTML = `已盤 <b class="num">${s.n}</b> / ${total} 項・差異 <b class="num">${s.diffN}</b> 項<br><span style="color:var(--good)">盤盈 ${sq(s.gainQ)}${mv(s.gainV)}</span>　<span style="color:var(--bad)">盤虧 ${qf(s.lossQ)}${mv(s.lossV)}</span>`;
   }
   function renderCount() {
     const wh = countWh();
@@ -1391,7 +1516,7 @@ body.gated .whbar{display:none!important}
     if (!s.n) { toast('還沒有盤任何商品'); return; }
     const diffs = state.products.filter(p => isActive(p) && counted(p.id)).map(p => { const st = C.st[p.id], sys = csys(p.id); return { p, sys, cnt: num(draft.counts[p.id]), d: r2(num(draft.counts[p.id]) - sys), avg: st.avg }; }).filter(x => x.d !== 0);
     const total = state.products.filter(isActive).length;
-    if (!confirm(`盤點單 ${draft.id}${multiWh() ? '（' + whName(draft.wh) + '）' : ''}\n已盤 ${s.n} / ${total} 項，有差異 ${diffs.length} 項。\n盤盈 ${sq(s.gainQ)}（${money(s.gainV)}）　盤虧 ${qf(s.lossQ)}（${money(s.lossV)}）\n${s.n < total ? `\n沒盤到的 ${total - s.n} 項不會調整。` : ''}\n確定完成盤點？系統會新增「盤點調整」紀錄，讓帳上庫存等於實盤數量。`)) return;
+    if (!confirm(`盤點單 ${draft.id}${multiWh() ? '（' + whName(draft.wh) + '）' : ''}\n已盤 ${s.n} / ${total} 項，有差異 ${diffs.length} 項。\n盤盈 ${sq(s.gainQ)}${canMoney() ? '（' + money(s.gainV) + '）' : ''}　盤虧 ${qf(s.lossQ)}${canMoney() ? '（' + money(s.lossV) + '）' : ''}\n${s.n < total ? `\n沒盤到的 ${total - s.n} 項不會調整。` : ''}\n確定完成盤點？系統會新增「盤點調整」紀錄，讓帳上庫存等於實盤數量。`)) return;
     if (diffs.length) addMoves(diffs.map(x => ({ id: uid(), createdAt: Date.now(), type: 'adj', productId: x.p.id, warehouseId: draft.wh, qty: x.d, price: Math.round(x.avg * 100) / 100, party: '', date: today(), time: nowHM(), note: `盤點：帳上 ${qf(x.sys)} → 實盤 ${qf(x.cnt)}`, batch: draft.id })));
     const id = draft.id;
     draft = freshDraft(draft.wh); saveDraft();
@@ -1406,40 +1531,137 @@ body.gated .whbar{display:none!important}
     if (!CLOUD) {
       h += `<div class="info"><b>單機模式</b><span>資料只存在<b>這台裝置的瀏覽器</b>。換手機、換電腦或清除瀏覽器資料前，請先「下載備份」。要多人共用同一份資料，請依 SETUP.md 開啟雲端同步。</span></div>`;
     } else {
-      const role = be.role === 'owner' ? '負責人' : be.role === 'staff' ? '管理員' : '';
-      h += `<div class="info"><b>☁ 雲端同步・多人共用</b><span>${esc(be.user?.name || '')}（${esc(be.user?.email || '')}）${role ? '・' + role : ''}</span><span>資料即時同步給所有成員；離線時會先存在這台裝置，恢復連線後自動上傳。</span></div>
+      h += `<div class="info"><b>☁ 雲端同步・多人共用</b><span>${esc(be.user?.name || '')}（${esc(be.user?.email || '')}）${be.role ? '・' + ROLE_NAME[be.role] : ''}</span><span>資料即時同步給所有成員；離線時會先存在這台裝置，恢復連線後自動上傳。</span></div>
         <div style="margin-bottom:6px"><button class="btn small" data-set="logout">登出</button></div>`;
-      if (be.role === 'owner') {
-        const owner = (CONFIG.ownerEmail || '').trim().toLowerCase();
-        const mem = state.members.filter(m => m.email !== owner);
-        h += `<div class="sec-title">成員（可以看到並記錄同一份資料的人）</div>
-          <div class="mem"><span>${esc(owner || be.user.email)}</span><span class="chip good">負責人</span><span></span></div>
-          ${mem.map(m => `<div class="mem"><span>${esc(m.email)}</span><span class="chip ${m.role === 'owner' ? 'good' : 'off'}">${m.role === 'owner' ? '負責人' : '管理員'}</span><button class="btn small danger" data-set="rm-member" data-email="${esc(m.email)}">移除</button></div>`).join('')}
-          <div class="addmem"><input class="field" id="memEmail" type="email" placeholder="輸入對方的 Gmail" autocomplete="off"><select class="field" id="memRole" style="width:auto"><option value="staff">管理員</option><option value="owner">負責人</option></select><button class="btn primary" data-set="add-member">加入</button></div>
-          <p class="hint">管理員可以記帳、盤點、新增商品；只有負責人能管理成員。對方用這個 Gmail 登入就能使用。</p>`;
-      }
     }
-    // 倉庫
-    const can = canManageWh();
-    h += `<div class="sec-title">倉庫${can ? '' : '（只有負責人可以新增或修改）'}</div>
-      ${whList().map(w => { const n = state.products.reduce((a, p) => a + (C.st[p.id]?.wh[w.id] || 0), 0); return `<div class="mem"><span>${esc(w.name)}${w.active === false ? ' <span class="chip off">已停用</span>' : ''}<br><small class="muted">庫存合計 ${qf(r2(n))}</small></span>${can ? `<button class="btn small" data-set="wh-rename" data-id="${esc(w.id)}">改名</button><button class="btn small ${w.active === false ? '' : 'danger'}" data-set="wh-toggle" data-id="${esc(w.id)}">${w.active === false ? '啟用' : '停用'}</button>` : '<span></span><span></span>'}</div>`; }).join('')}
-      ${can ? `<div class="addmem" style="grid-template-columns:minmax(0,1fr) auto"><input class="field" id="whNew" placeholder="新倉庫名稱，例如：成功路倉庫" autocomplete="off"><button class="btn primary" data-set="wh-add">新增倉庫</button></div>` : ''}
-      <p class="hint">有兩個以上的倉庫時，畫面上方會出現倉庫切換，記帳可以選倉庫，也可以「調撥」。舊的紀錄都算在第一個倉庫。</p>`;
+    const links = [];
+    if (isOwnerRole()) links.push(`<button class="btn small primary" data-set="go-admin">前往後台</button>`);
+    if (CLOUD && canMoney()) { const n = pendingPrice().total; links.push(`<button class="btn small" data-set="go-price">金額確認${n ? `（${n}）` : ''}</button>`); }
+    if (links.length) h += `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 4px">${links.join('')}</div>`;
+    if (isOwnerRole()) h += `<p class="hint">成員與角色、倉庫管理、金額修改紀錄、資料維護都在「後台」。</p>`;
     h += `<div class="sec-title">資料</div><div class="set-list">`;
-    h += item('下載備份', '存成一個 .json 檔，留一份在自己電腦', `<button class="btn small" data-set="export">下載</button>`);
-    h += item('匯出 Excel 用的明細', 'CSV 檔，可用 Excel / Google 試算表開', `<button class="btn small" data-set="csv">匯出</button>`);
+    if (canMoney()) {
+      h += item('下載備份', '存成一個 .json 檔，留一份在自己電腦', `<button class="btn small" data-set="export">下載</button>`);
+      h += item('匯出 Excel 用的明細', 'CSV 檔，可用 Excel / Google 試算表開', `<button class="btn small" data-set="csv">匯出</button>`);
+    }
     h += item('批次匯入（Excel）', '下載範本，在電腦一次填多筆商品或進出貨，再上傳', `<button class="btn small" data-set="bulk">開啟</button>`);
     if (!CLOUD) {
       h += item('匯入備份', '會取代目前所有資料', `<button class="btn small" data-set="import">選擇檔案</button>`);
       h += item('載入範例資料', '先玩玩看，熟悉後再清除', `<button class="btn small" data-set="sample">載入</button>`);
       h += item('清除所有資料', '無法復原，建議先下載備份', `<button class="btn small danger" data-set="clear">清除</button>`);
-    } else if (be.role === 'owner') {
-      h += item('上傳單機資料到雲端', '把這台裝置以前在單機模式記的資料併入雲端（只上傳雲端還沒有的）', `<button class="btn small" data-set="upload">上傳</button>`);
-      h += item('從備份檔匯入到雲端', '把 .json 備份併入雲端（只新增，不會覆蓋或刪除）', `<button class="btn small" data-set="import">選擇檔案</button>`);
     }
     h += `</div>`;
     $('#setBody').innerHTML = h;
   }
+  const refreshPanels = () => { if ($('#setDlg').open) renderSettings(); if (ui.view === 'admin') renderAdmin(); if (ui.view === 'price') renderPrice(); };
+
+  /* ---------- 金額待確認 ---------- */
+  function pendingPrice() {
+    const moves = liveMoves().filter(m => (m.type === 'in' || m.type === 'out') && C.auto[m.id]);
+    const prods = state.products.filter(p => isActive(p) && !hasPrice(p));
+    return { moves, prods, total: moves.length + prods.length };
+  }
+  function renderPrice() {
+    const { moves, prods } = pendingPrice();
+    $('#priceSum').textContent = moves.length + prods.length ? `${moves.length + prods.length} 筆待處理` : '';
+    let h = `<div class="info">現場人員記的進出貨，單價是系統自動帶入的（進貨帶上次進價、出貨帶售價），確認後才算定案。你也可以先改成正確的金額再確認，修改都會留下紀錄。</div>`;
+    h += `<div class="card adm-sec"><h3>未設定價格的商品 <small>${prods.length} 項</small></h3>${prods.length ? prods.map(p => `<div class="prc2" data-pid="${p.id}"><span style="min-width:0"><div class="nm">${esc(p.name)}</div><div class="sub">${codeTag(p)}${esc(p.spec || '')}</div></span><input class="field num pp-cost" type="number" inputmode="decimal" min="0" step="any" placeholder="成本" aria-label="${esc(p.name)} 成本"><input class="field num pp-price" type="number" inputmode="decimal" min="0" step="any" placeholder="售價" aria-label="${esc(p.name)} 售價"><button class="btn small primary" data-pr="setp" data-id="${p.id}">儲存</button></div>`).join('') : '<div class="ok-box">所有商品都有價格</div>'}</div>`;
+    const list = sortedMoves(moves).reverse();
+    h += `<div class="card adm-sec"><h3>自動帶價、待確認的紀錄 <small>${list.length} 筆</small>${list.length > 1 ? `<button class="btn small" data-pr="all">全部照現在的金額確認</button>` : ''}</h3>${list.length ? list.map(m => { const p = prodById(m.productId) || { name: '（找不到商品）' }; return `<div class="prc" data-id="${m.id}"><span style="min-width:0"><div class="nm">${m.type === 'in' ? '進' : '出'}・${esc(p.name)} × ${qf(m.qty)}</div><div class="sub">${esc([dLabel(m.date) + (occTime(m) ? ' ' + occTime(m) : ''), multiWh() ? whName(whOf(m)) : '', m.party, who(m)].filter(Boolean).join(' · '))}</div></span><input class="field num pm-price" type="number" inputmode="decimal" min="0" step="any" value="${px(m)}" aria-label="單價"><button class="btn small primary" data-pr="confirm" data-id="${m.id}">確認</button></div>`; }).join('') : '<div class="ok-box">沒有待確認的金額 👍</div>'}</div>`;
+    $('#priceBody').innerHTML = h;
+  }
+  $('#priceBody').addEventListener('click', e => {
+    const b = e.target.closest('[data-pr]'); if (!b) return;
+    if (b.dataset.pr === 'setp') {
+      const row = b.closest('.prc2'), p = prodById(b.dataset.id); if (!p) return;
+      const c = row.querySelector('.pp-cost').value, s = row.querySelector('.pp-price').value;
+      if (c === '' && s === '') { toast('請至少填成本或售價'); return; }
+      putProduct({ ...p, cost: c === '' ? 0 : num(c), price: s === '' ? 0 : num(s) }); toast(`已設定「${p.name}」的價格`);
+    } else if (b.dataset.pr === 'confirm') {
+      const m = state.moves.find(x => x.id === b.dataset.id); if (!m) return;
+      const v = num(b.closest('.prc').querySelector('.pm-price').value), auto = px(m);
+      setMovePrice(m, v, Math.abs(v - auto) > 1e-9); toast(Math.abs(v - auto) > 1e-9 ? '已修改並確認' : '已確認');
+    } else if (b.dataset.pr === 'all') {
+      const { moves } = pendingPrice(); if (!confirm(`把 ${moves.length} 筆自動帶入的單價全部照現在的金額確認？`)) return;
+      if (!CLOUD) return;
+      const { db, F } = fb;
+      for (let i = 0; i < moves.length; i += 400) { const bt = F.writeBatch(db); moves.slice(i, i + 400).forEach(m => bt.set(F.doc(db, 'money', m.id), { price: px(m), confirmed: true, by: be.user.email, at: Date.now() })); bt.commit().catch(cloudErr); }
+      toast(`已確認 ${moves.length} 筆`);
+    }
+  });
+
+  /* ---------- 後台（負責人） ---------- */
+  function legacyCounts() {
+    return { moves: state.moves.filter(m => m.price !== undefined).length, prods: state.products.filter(p => p.cost !== undefined || p.price !== undefined).length };
+  }
+  function renderAdmin() {
+    const item = (t, d, btn) => `<div class="set-item"><div><b>${t}</b><p>${d}</p></div>${btn}</div>`;
+    let h = '';
+    if (CLOUD) {
+      const lc = legacyCounts();
+      if (lc.moves || lc.prods) h += `<div class="info bad"><b>⚠ 還有舊資料的金額沒有轉換</b><span>${lc.moves} 筆紀錄、${lc.prods} 項商品的金額還存在一般資料裡，現場人員有機會看到。請先按下方「資料維護 → 轉換舊資料」，完成後再加入現場人員。</span></div>`;
+      // 成員
+      const owner = (CONFIG.ownerEmail || '').trim().toLowerCase();
+      const mem = state.members.filter(m => m.email !== owner);
+      const roleSel = (cur, email) => `<select class="field" data-set="role-member" data-email="${esc(email)}">${['field', 'staff', 'owner'].map(r => `<option value="${r}" ${cur === r ? 'selected' : ''}>${ROLE_NAME[r]}</option>`).join('')}</select>`;
+      h += `<div class="card adm-sec"><h3>成員與角色</h3>
+        <div class="mem"><span>${esc(owner || be.user.email)}</span><span class="chip good">負責人</span><span></span></div>
+        ${mem.map(m => `<div class="mem"><span>${esc(m.email)}</span>${roleSel(m.role === 'owner' ? 'owner' : m.role === 'field' ? 'field' : 'staff', m.email)}<button class="btn small danger" data-set="rm-member" data-email="${esc(m.email)}">移除</button></div>`).join('')}
+        <div class="addmem"><input class="field" id="memEmail" type="email" placeholder="輸入對方的 Gmail" autocomplete="off"><select class="field" id="memRole" style="width:auto"><option value="field">現場人員</option><option value="staff">管理員</option><option value="owner">負責人</option></select><button class="btn primary" data-set="add-member">加入</button></div>
+        <p class="hint"><b>現場人員</b>：記帳、調撥、盤點、商品、沖銷、批次匯入都可以，但看不到任何金額。<br><b>管理員</b>：日常全部功能，看得到金額，可以確認、修改單價。<br><b>負責人</b>：全部功能加上後台。</p></div>`;
+    }
+    // 倉庫
+    h += `<div class="card adm-sec"><h3>倉庫</h3>
+      ${whList().map(w => { const n = state.products.reduce((a, p) => a + (C.st[p.id]?.wh[w.id] || 0), 0); return `<div class="mem"><span>${esc(w.name)}${w.active === false ? ' <span class="chip off">已停用</span>' : ''}<br><small class="muted">庫存合計 ${qf(r2(n))}</small></span><button class="btn small" data-set="wh-rename" data-id="${esc(w.id)}">改名</button><button class="btn small ${w.active === false ? '' : 'danger'}" data-set="wh-toggle" data-id="${esc(w.id)}">${w.active === false ? '啟用' : '停用'}</button></div>`; }).join('')}
+      <div class="addmem" style="grid-template-columns:minmax(0,1fr) auto"><input class="field" id="whNew" placeholder="新倉庫名稱，例如：成功路倉庫" autocomplete="off"><button class="btn primary" data-set="wh-add">新增倉庫</button></div>
+      <p class="hint">有兩個以上的倉庫時，畫面上方會出現倉庫切換，記帳可以選倉庫，也可以「調撥」。</p></div>`;
+    // 金額
+    if (CLOUD) {
+      const n = pendingPrice().total;
+      h += `<div class="card adm-sec"><h3>金額 <button class="btn small" data-go="price">金額確認${n ? `（${n}）` : ''}</button></h3>
+        <div class="sec-title" style="margin-top:0">修改紀錄（最近 100 筆）</div>
+        ${state.moneyLog.length ? state.moneyLog.slice(0, 100).map(l => `<div class="logrow"><div>${esc(l.label)}</div><div class="sub">${esc(l.from)} → <b>${esc(l.to)}</b>・${esc(l.byName || l.by)}・${tLabel(l.at)}</div></div>`).join('') : '<div class="muted" style="font-size:.88rem">目前沒有修改紀錄</div>'}</div>`;
+    }
+    // 資料維護
+    h += `<div class="card adm-sec"><h3>資料維護</h3><div class="set-list">`;
+    if (CLOUD) {
+      const lc = legacyCounts();
+      h += item('轉換舊資料', lc.moves || lc.prods ? `把 ${lc.moves} 筆紀錄、${lc.prods} 項商品的金額搬到受保護的地方（只需要做一次）` : '✓ 已經轉換完成', `<button class="btn small ${lc.moves || lc.prods ? 'primary' : ''}" data-set="migrate" ${lc.moves || lc.prods ? '' : 'disabled'}>轉換</button>`);
+    }
+    h += item('下載備份', '存成一個 .json 檔，留一份在自己電腦', `<button class="btn small" data-set="export">下載</button>`);
+    if (CLOUD) {
+      h += item('上傳單機資料到雲端', '把這台裝置以前在單機模式記的資料併入雲端（只上傳雲端還沒有的）', `<button class="btn small" data-set="upload">上傳</button>`);
+      h += item('從備份檔匯入到雲端', '把 .json 備份併入雲端（只新增，不會覆蓋或刪除）', `<button class="btn small" data-set="import">選擇檔案</button>`);
+    }
+    h += `</div></div>`;
+    $('#adminBody').innerHTML = h;
+  }
+  // 把舊資料裡的金額搬到 prices / money，並從一般資料移除
+  async function migrateMoney() {
+    const { db, F } = fb;
+    const mv = state.moves.filter(m => m.price !== undefined), pd = state.products.filter(p => p.cost !== undefined || p.price !== undefined);
+    if (!mv.length && !pd.length) { toast('沒有需要轉換的資料'); return; }
+    if (!confirm(`將轉換 ${mv.length} 筆紀錄、${pd.length} 項商品的金額。\n轉換過程請保持網路連線，不要關閉網頁。\n\n確定開始？`)) return;
+    const ops = [];
+    for (const p of pd) {
+      if (!state.prices[p.id]) ops.push(['set', 'prices', p.id, { cost: p.cost ?? null, price: p.price ?? null, by: be.user.email, at: Date.now(), migrated: true }]);
+      ops.push(['update', 'products', p.id, { cost: F.deleteField(), price: F.deleteField() }]);
+    }
+    for (const m of mv) {
+      if ((m.type === 'in' || m.type === 'out') && !state.money[m.id]) ops.push(['set', 'money', m.id, { price: num(m.price), confirmed: true, by: be.user.email, at: Date.now(), migrated: true }]);
+      ops.push(['update', 'moves', m.id, { price: F.deleteField() }]);
+    }
+    try {
+      for (let i = 0; i < ops.length; i += 400) {
+        const b = F.writeBatch(db);
+        ops.slice(i, i + 400).forEach(([k, c, id, d]) => k === 'set' ? b.set(F.doc(db, c, id), d) : b.update(F.doc(db, c, id), d));
+        await b.commit();
+        toast(`轉換中… ${Math.min(i + 400, ops.length)} / ${ops.length}`);
+      }
+      toast('✓ 轉換完成，現在可以安全加入現場人員了');
+    } catch (e) { cloudErr(e); }
+  }
+
   function download(name, text, type) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500); }
   // 雲端：把一批商品 / 紀錄併入（只新增雲端沒有的 id）
   function mergeIntoCloud(products, moves, warehouses) {
@@ -1454,10 +1676,19 @@ body.gated .whbar{display:none!important}
     addMoves(M.map(m => { const x = { ...m }; delete x.by; delete x.byName; x.note = x.note || ''; return x; }));
     toast('上傳中…完成後所有成員都會看到');
   }
-  $('#setDlg').addEventListener('click', e => {
-    const b = e.target.closest('[data-set]'); if (!b) return;
+  document.addEventListener('change', e => {
+    const s = e.target.closest('select[data-set="role-member"]'); if (!s) return;
+    const email = s.dataset.email, role = s.value;
+    if (!confirm(`把 ${email} 改成「${ROLE_NAME[role]}」？`)) { renderAdmin(); return; }
+    fb.F.setDoc(fb.F.doc(fb.db, 'members', email), { role, addedBy: be.user.email, addedAt: Date.now() }).then(() => toast(`已改成${ROLE_NAME[role]}`)).catch(cloudErr);
+  });
+  document.addEventListener('click', e => {
+    const b = e.target.closest('button[data-set]'); if (!b) return;
     const k = b.dataset.set;
-    if (k === 'export') download(`進出貨備份-${today()}.json`, JSON.stringify({ app: 'stockbook', version: 3, exportedAt: new Date().toISOString(), products: state.products, moves: state.moves, warehouses: state.warehouses }, null, 2), 'application/json');
+    if (k === 'go-admin') { $('#setDlg').close(); go('admin'); }
+    else if (k === 'go-price') { $('#setDlg').close(); go('price'); }
+    else if (k === 'migrate') migrateMoney();
+    else if (k === 'export') download(`進出貨備份-${today()}.json`, JSON.stringify({ app: 'stockbook', version: 3, exportedAt: new Date().toISOString(), products: state.products, moves: state.moves, warehouses: state.warehouses }, null, 2), 'application/json');
     else if (k === 'csv') exportCsv();
     else if (k === 'bulk') { $('#setDlg').close(); openBulk(); }
     else if (k === 'import') $('#sFile').click();
@@ -1468,13 +1699,13 @@ body.gated .whbar{display:none!important}
       const name = $('#whNew').value.trim(); if (!name) { toast('請輸入倉庫名稱'); $('#whNew').focus(); return; }
       if (whList().some(w => w.name === name)) { toast('已經有同名的倉庫'); return; }
       putWarehouse({ id: 'wh' + uid(), name, active: true, order: Math.max(0, ...whList().map(w => w.order || 0)) + 1, createdAt: Date.now() });
-      toast(`已新增倉庫：${name}`); setTimeout(renderSettings, 50);
+      toast(`已新增倉庫：${name}`); setTimeout(refreshPanels, 50);
     }
     else if (k === 'wh-rename') {
       const w = whById(b.dataset.id); const name = (prompt('倉庫新名稱', w.name) || '').trim();
       if (!name || name === w.name) return;
       if (whList().some(x => x.name === name && x.id !== w.id)) { toast('已經有同名的倉庫'); return; }
-      putWarehouse({ ...w, name }); toast('已改名'); setTimeout(renderSettings, 50);
+      putWarehouse({ ...w, name }); toast('已改名'); setTimeout(refreshPanels, 50);
     }
     else if (k === 'wh-toggle') {
       const w = whById(b.dataset.id);
@@ -1484,7 +1715,7 @@ body.gated .whbar{display:none!important}
         if (!confirm(`停用「${w.name}」？\n停用後不能再選這個倉庫記帳，歷史紀錄保留，之後可以重新啟用。${n ? `\n\n⚠ 這個倉庫帳上還有 ${qf(n)} 件庫存，建議先「調撥」到其他倉庫。` : ''}`)) return;
         putWarehouse({ ...w, active: false }); if (ui.wh === w.id) setWh('all');
       } else putWarehouse({ ...w, active: true });
-      setTimeout(renderSettings, 50);
+      setTimeout(refreshPanels, 50);
     }
     else if (k === 'upload') { let d = null; try { d = JSON.parse(localStorage.getItem(LS_KEY) || 'null'); } catch (e) {} if (!d) { toast('這台裝置沒有單機模式的資料'); return; } mergeIntoCloud(d.products, d.moves, d.warehouses); }
     else if (k === 'add-member') {
@@ -1512,9 +1743,9 @@ body.gated .whbar{display:none!important}
     const rows = [['日期', '時間', '類型', '倉庫', '品號', '商品', '規格', '數量', '單位', '單價', '金額', '成本', '毛利', '供應商/客戶', '備註', '狀態', '記錄者', '盤點單']];
     for (const m of sortedMoves(records())) {
       const p = prodById(m.productId) || {}, v = !!V[m.id];
-      const amt = m.type === 'adj' ? Math.round(C.adjv[m.id] || 0) : m.type === 'xfer' ? '' : m.qty * m.price;
+      const amt = m.type === 'adj' ? Math.round(C.adjv[m.id] || 0) : m.type === 'xfer' ? '' : m.qty * px(m);
       const c = m.type === 'out' && !v ? Math.round(C.cogs[m.id] || 0) : '';
-      rows.push([m.date, occTime(m), TYPE_NAME[m.type], m.type === 'xfer' ? `${whName(m.fromWh)} → ${whName(m.toWh)}` : whName(whOf(m)), p.code, p.name, p.spec, m.qty, p.unit, m.price, v ? '' : amt, c, m.type === 'out' && !v ? Math.round(amt - c) : '', m.party, m.note, v ? '已沖銷' : '有效', who(m), m.batch || '']);
+      rows.push([m.date, occTime(m), TYPE_NAME[m.type], m.type === 'xfer' ? `${whName(m.fromWh)} → ${whName(m.toWh)}` : whName(whOf(m)), p.code, p.name, p.spec, m.qty, p.unit, m.type === 'in' || m.type === 'out' ? px(m) : '', v ? '' : amt, c, m.type === 'out' && !v ? Math.round(amt - c) : '', m.party, m.note, v ? '已沖銷' : '有效', who(m), m.batch || '']);
     }
     download(`進出貨明細-${today()}.csv`, '﻿' + rows.map(r => r.map(cell).join(',')).join('\n'), 'text/csv');
   }
@@ -1681,6 +1912,12 @@ body.gated .whbar{display:none!important}
   const isExampleRow = o => normCode(cellStr(o.code)) === 'EX-001' || cellStr(o.note).includes(EX_NOTE);
   const normH = h => String(h ?? '').replace(/[（(][^）)]*[）)]/g, '').replace(/[\s*＊]/g, '').trim();
 
+  // 從範本拿掉某些欄位（同時調整欄寬、文字欄、下拉選單的位置）
+  function dropCols(s, names) {
+    const drop = s.rows[0].map((h, i) => names.includes(normH(h)) ? i : -1).filter(i => i >= 0);
+    const keep = i => !drop.includes(i), map = i => i - drop.filter(d => d < i).length;
+    return { ...s, rows: s.rows.map(r => r.filter((_, i) => keep(i))), widths: (s.widths || []).filter((_, i) => keep(i)), textCols: (s.textCols || []).filter(keep).map(map), lists: (s.lists || []).filter(l => keep(l.col)).map(l => ({ ...l, col: map(l.col) })) };
+  }
   function downloadTemplate() {
     const whA = whActive(), whN = whA.map(w => w.name);
     const act = state.products.filter(isActive).sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
@@ -1713,13 +1950,20 @@ body.gated .whbar{display:none!important}
       ['「現有商品」「倉庫」工作表只是給你對照用的，匯入時會忽略。'],
       ['匯入的紀錄跟手動記的一樣：不能修改刪除，記錯了請在網站上「沖銷」。'],
     ];
-    const blob = XL.write([
+    const S = [
       { name: '商品', rows: [P_COLS, ['EX-001', '有機燕麥奶（範例）', '1L / 瓶', '飲品', '瓶', 62, 99, 24, 30, whN[0], EX_NOTE]], exampleRows: [1], widths: [14, 22, 14, 10, 8, 10, 10, 10, 10, 16, 20], textCols: [0], lists: [{ col: 9, values: whN }] },
       { name: '進出貨', rows: [M_COLS, [today().replace(/-/g, '/'), '09:30', whN[0], '進貨', 'EX-001', '有機燕麥奶（範例）', 24, 60, '綠野食品', EX_NOTE]], exampleRows: [1], widths: [13, 9, 16, 11, 14, 22, 11, 10, 16, 20], textCols: [1, 4], lists: [{ col: 2, values: whN }, { col: 3, values: ['進貨', '出貨'] }] },
       { name: '說明', rows: help, widths: [110], header: false, wrap: true },
       { name: '現有商品', rows: [['品號', '商品名稱', '規格', '單位', '分類', '目前庫存（合計）', ...(whA.length > 1 ? whA.map(w => w.name) : [])], ...act.map(p => [p.code || '', p.name, p.spec || '', p.unit || '', p.category || '', r2(C.st[p.id].stock), ...(whA.length > 1 ? whA.map(w => r2(C.st[p.id].wh[w.id] || 0)) : [])])], widths: [14, 24, 14, 8, 10, 14, ...whA.map(() => 14)], textCols: [0] },
       { name: '倉庫', rows: [['倉庫名稱'], ...whA.map(w => [w.name])], widths: [24] },
-    ]);
+    ];
+    if (!canMoney()) {   // 現場人員的範本沒有金額欄位
+      S[0] = dropCols(S[0], ['成本', '售價']); S[1] = dropCols(S[1], ['單價']);
+      const hi = S.findIndex(s => s.name === '說明');
+      S[hi].rows = S[hi].rows.filter(r => !/成本|售價|單價|例：/.test(r[0]));
+      S[hi].rows.splice(3, 0, ['※ 這份範本沒有金額欄位：進貨會自動帶上次的進價、出貨帶售價，由管理員確認。']);
+    }
+    const blob = XL.write(S);
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `批次匯入範本-${today()}.xlsx`; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
   }
 
@@ -1784,7 +2028,7 @@ body.gated .whbar{display:none!important}
     for (const o of noEx(pT)) {
       const r = { row: o.row, errs: [], warns: [] };
       const code = cellStr(o.code), name = cellStr(o.name);
-      const nums = {}; for (const [k, l] of [['cost', '成本'], ['price', '售價'], ['safety', '安全庫存'], ['open', '期初庫存']]) { const n = cellNum(o[k]); if (Number.isNaN(n)) r.errs.push(`${l}不是數字`); else if (n !== null && n < 0) r.errs.push(`${l}不能是負數`); nums[k] = n; }
+      const nums = {}; for (const [k, l] of [['cost', '成本'], ['price', '售價'], ['safety', '安全庫存'], ['open', '期初庫存']]) { if (!canMoney() && (k === 'cost' || k === 'price')) { nums[k] = null; continue; } const n = cellNum(o[k]); if (Number.isNaN(n)) r.errs.push(`${l}不是數字`); else if (n !== null && n < 0) r.errs.push(`${l}不能是負數`); nums[k] = n; }
       const ex = code ? prodByCode(code) : null;
       if (code && fileCodes.has('#' + normCode(code))) r.errs.push(`品號「${code}」在檔案裡重複`);
       if (ex) {
@@ -1793,12 +2037,13 @@ body.gated .whbar{display:none!important}
         if (name) r.data.name = name;
         for (const k of ['spec', 'category', 'unit', 'note']) { const v = cellStr(o[k]); if (v) r.data[k] = v; }
         for (const k of ['cost', 'price', 'safety']) if (nums[k] !== null && !Number.isNaN(nums[k])) r.data[k] = nums[k];
+        if (!canMoney()) { delete r.data.cost; delete r.data.price; }
         if (!isActive(ex)) { r.data.active = true; r.warns.push('這個商品原本停用，會重新啟用'); }
         if (nums.open) r.warns.push('既有商品不會套用「期初庫存」，要補數量請在「進出貨」工作表記進貨');
       } else {
         if (!name) r.errs.push('商品名稱沒填');
         r.action = 'new';
-        r.data = { id: uid() + prods.length, createdAt: Date.now(), active: true, createdBy: be.user?.email || '', code, name, spec: cellStr(o.spec), category: cellStr(o.category), unit: cellStr(o.unit) || '個', cost: nums.cost || 0, price: nums.price || 0, safety: nums.safety ?? 5, note: cellStr(o.note) };
+        r.data = { id: uid() + prods.length, createdAt: Date.now(), active: true, createdBy: be.user?.email || '', code, name, spec: cellStr(o.spec), category: cellStr(o.category), unit: cellStr(o.unit) || '個', ...(canMoney() ? { cost: nums.cost || 0, price: nums.price || 0 } : {}), safety: nums.safety ?? 5, note: cellStr(o.note) };
         r.open = nums.open || 0;
         r.openWh = r.open ? resolveWh(o.openWh, r) : null;
         if (name && state.products.some(p => p.name === name && (p.spec || '') === r.data.spec)) r.warns.push('已經有同名同規格的商品，會再新增一個');
@@ -1818,7 +2063,7 @@ body.gated .whbar{display:none!important}
       const t = cellStr(o.type).toLowerCase(); const type = TYPE_IN.includes(t) ? 'in' : TYPE_OUT.includes(t) ? 'out' : null;
       if (!type) r.errs.push(t ? `類型要填「進貨」或「出貨」，不是「${cellStr(o.type)}」` : '類型沒填');
       const qty = cellNum(o.qty); if (qty === null) r.errs.push('數量沒填'); else if (Number.isNaN(qty)) r.errs.push('數量不是數字'); else if (qty <= 0) r.errs.push('數量要大於 0');
-      const price = cellNum(o.price); if (Number.isNaN(price)) r.errs.push('單價不是數字'); else if (price !== null && price < 0) r.errs.push('單價不能是負數');
+      const price = canMoney() ? cellNum(o.price) : null; if (Number.isNaN(price)) r.errs.push('單價不是數字'); else if (price !== null && price < 0) r.errs.push('單價不能是負數');
       const code = cellStr(o.code), name = cellStr(o.name);
       let p = null, fromFile = null;
       if (code) {
@@ -1837,12 +2082,12 @@ body.gated .whbar{display:none!important}
       r.pname = p ? p.name : fromFile ? fromFile.data.name : (name || code);
       r.unit = p ? p.unit : fromFile?.data.unit;
       let pr = price;
-      if (!r.errs.length && pr === null) {
+      if (!r.errs.length && pr === null && canMoney()) {
         r.defPrice = true;
-        if (type === 'in') pr = p ? (C.st[p.id].lastIn ?? num(p.cost)) : fromFile.data.cost;
-        else pr = p ? num(p.price) : fromFile.data.price;
+        if (type === 'in') pr = p ? (C.st[p.id].lastIn ?? num(pCost(p))) : fromFile.data.cost;
+        else pr = p ? num(pPrice(p)) : fromFile.data.price;
       }
-      r.data = { type, productId: pid, warehouseId: wh, qty, price: pr || 0, party: cellStr(o.party), date, time: tm || nowHM(), note: cellStr(o.note) };
+      r.data = { type, productId: pid, warehouseId: wh, qty, ...(canMoney() ? { price: pr || 0 } : {}), party: cellStr(o.party), date, time: tm || nowHM(), note: cellStr(o.note) };
       moves.push(r);
     }
     // 模擬庫存（依日期）
@@ -1876,8 +2121,8 @@ body.gated .whbar{display:none!important}
         ${warn ? `<div class="info warn">有 ${warn} 列需要留意（黃色），仍然會匯入。</div>` : ''}`;
       const st = r => r.errs.length ? `<span class="chip bad">✕ ${esc(r.errs.join('、'))}</span>` : r.warns.length ? `<span class="chip warn">! ${esc(r.warns.join('、'))}</span>` : `<span class="chip good">✓</span>`;
       const LIM = 300, mw = multiWh();
-      if (prods.length) h += `<div class="sec-title">商品（${prods.length} 列）</div><div class="tablewrap"><table class="btbl"><thead><tr><th>列</th><th>動作</th><th>品號</th><th>名稱</th><th>成本</th><th>售價</th><th>期初</th><th>檢查</th></tr></thead><tbody>${prods.slice(0, LIM).map(r => `<tr class="${r.errs.length ? 'bad' : ''}"><td>${r.row}</td><td>${r.action === 'update' ? '更新' : '新增'}</td><td>${esc(r.data?.code || '')}</td><td>${esc(r.data?.name || '')}</td><td class="num">${r.errs.length ? '' : qf(r.data.cost)}</td><td class="num">${r.errs.length ? '' : qf(r.data.price)}</td><td class="num">${r.open ? qf(r.open) : ''}</td><td>${st(r)}</td></tr>`).join('')}</tbody></table></div>`;
-      if (moves.length) h += `<div class="sec-title">進出貨（${moves.length} 列）</div><div class="tablewrap"><table class="btbl"><thead><tr><th>列</th><th>日期</th>${mw ? '<th>倉庫</th>' : ''}<th>類型</th><th>商品</th><th>數量</th><th>單價</th><th>對象</th><th>檢查</th></tr></thead><tbody>${moves.slice(0, LIM).map(r => `<tr class="${r.errs.length ? 'bad' : ''}"><td>${r.row}</td><td>${r.data.date && !Number.isNaN(r.data.date) ? esc(r.data.date) + (r.data.time && !Number.isNaN(r.data.time) ? ' ' + esc(r.data.time) : '') : ''}</td>${mw ? `<td>${r.data.warehouseId ? esc(whName(r.data.warehouseId)) : ''}</td>` : ''}<td>${r.data.type === 'in' ? '進貨' : r.data.type === 'out' ? '出貨' : ''}</td><td>${esc(r.pname || '')}</td><td class="num">${r.data.qty > 0 ? qf(r.data.qty) : ''}</td><td class="num">${!r.errs.length ? money(r.data.price) + (r.defPrice ? '<small class="muted">（預設）</small>' : '') : ''}</td><td>${esc(r.data.party || '')}</td><td>${st(r)}</td></tr>`).join('')}</tbody></table></div>`;
+      if (prods.length) h += `<div class="sec-title">商品（${prods.length} 列）</div><div class="tablewrap"><table class="btbl"><thead><tr><th>列</th><th>動作</th><th>品號</th><th>名稱</th><th class="money-only">成本</th><th class="money-only">售價</th><th>期初</th><th>檢查</th></tr></thead><tbody>${prods.slice(0, LIM).map(r => `<tr class="${r.errs.length ? 'bad' : ''}"><td>${r.row}</td><td>${r.action === 'update' ? '更新' : '新增'}</td><td>${esc(r.data?.code || '')}</td><td>${esc(r.data?.name || '')}</td><td class="num money-only">${r.errs.length || !canMoney() ? '' : qf(r.data.cost)}</td><td class="num money-only">${r.errs.length || !canMoney() ? '' : qf(r.data.price)}</td><td class="num">${r.open ? qf(r.open) : ''}</td><td>${st(r)}</td></tr>`).join('')}</tbody></table></div>`;
+      if (moves.length) h += `<div class="sec-title">進出貨（${moves.length} 列）</div><div class="tablewrap"><table class="btbl"><thead><tr><th>列</th><th>日期</th>${mw ? '<th>倉庫</th>' : ''}<th>類型</th><th>商品</th><th>數量</th><th class="money-only">單價</th><th>對象</th><th>檢查</th></tr></thead><tbody>${moves.slice(0, LIM).map(r => `<tr class="${r.errs.length ? 'bad' : ''}"><td>${r.row}</td><td>${r.data.date && !Number.isNaN(r.data.date) ? esc(r.data.date) + (r.data.time && !Number.isNaN(r.data.time) ? ' ' + esc(r.data.time) : '') : ''}</td>${mw ? `<td>${r.data.warehouseId ? esc(whName(r.data.warehouseId)) : ''}</td>` : ''}<td>${r.data.type === 'in' ? '進貨' : r.data.type === 'out' ? '出貨' : ''}</td><td>${esc(r.pname || '')}</td><td class="num">${r.data.qty > 0 ? qf(r.data.qty) : ''}</td><td class="num money-only">${!r.errs.length && canMoney() ? money(r.data.price) + (r.defPrice ? '<small class="muted">（預設）</small>' : '') : ''}</td><td>${esc(r.data.party || '')}</td><td>${st(r)}</td></tr>`).join('')}</tbody></table></div>`;
       if (prods.length > LIM || moves.length > LIM) h += `<p class="hint">預覽只顯示前 ${LIM} 列，匯入會處理全部。</p>`;
       if (!prods.length && !moves.length) h += `<div class="info warn">檔案裡沒有資料列${bulk.res.exSkipped ? '（只有範例列）' : ''}，請在範例列下面填你的資料。</div>`;
       bulk.count = ok(prods).length + ok(moves).length;
@@ -1907,7 +2152,7 @@ body.gated .whbar{display:none!important}
     const t0 = Date.now(); let k = 0;
     putProducts(okP.map(r => r.data));
     const list = [];
-    okP.filter(r => r.action === 'new' && r.open > 0).forEach(r => list.push({ id: uid() + k, createdAt: t0 + k++, type: 'in', productId: r.data.id, warehouseId: r.openWh || MAIN_WH, qty: r.open, price: r.data.cost, party: '', date: today(), time: nowHM(), note: '期初庫存', batch }));
+    okP.filter(r => r.action === 'new' && r.open > 0).forEach(r => list.push({ id: uid() + k, createdAt: t0 + k++, type: 'in', productId: r.data.id, warehouseId: r.openWh || MAIN_WH, qty: r.open, ...(canMoney() ? { price: r.data.cost } : {}), party: '', date: today(), time: nowHM(), note: '期初庫存', batch }));
     okM.forEach(r => list.push({ id: uid() + k, createdAt: t0 + k++, ...r.data, batch }));
     if (list.length) addMoves(list);
     $('#bulkDlg').close();
