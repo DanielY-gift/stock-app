@@ -548,7 +548,7 @@ body.gated .whbar{display:none!important}
   /* ================= 雲端設定（多人共用）=================
      firebase 保持 null → 單機模式：資料只存在這台裝置的瀏覽器。
      要多人共用：依 SETUP.md 建立 Firebase 專案，把它給你的 firebaseConfig
-     整段貼到 firebase: { ... }，ownerEmail 填店主的 Gmail（要和 firestore.rules 一樣）。 */
+     整段貼到 firebase: { ... }，ownerEmail 填負責人的 Gmail（要和 firestore.rules 一樣）。 */
   const CONFIG = {
     firebase: {
       apiKey: "AIzaSyB5rDv41e0S0_C8S_96GBVCvd-bFyRzhuE",
@@ -673,8 +673,8 @@ body.gated .whbar{display:none!important}
     const g = $('#gateBody');
     const logo = `<svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linejoin="round"><path d="M3 8 12 3l9 5v8l-9 5-9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg>`;
     if (kind === 'loading') g.innerHTML = `${logo}<p>連線中…</p>`;
-    else if (kind === 'login') g.innerHTML = `${logo}<p style="font-size:1.1rem;color:var(--ink);margin:8px 0 2px"><b>登入進出貨管家</b></p><p style="margin:0">請用店主加入的 Google 帳號登入，大家會看到同一份資料。</p><button class="btn primary" data-act="login" style="margin-top:14px">用 Google 帳號登入</button>`;
-    else if (kind === 'denied') g.innerHTML = `${logo}<p style="font-size:1.1rem;color:var(--ink);margin:8px 0 2px"><b>這個帳號還沒有使用權限</b></p><p style="margin:0">${esc(be.user?.email || '')}<br>請店主到「設定 → 成員」加入這個 Gmail，加入後重新整理即可。</p><button class="btn" data-act="logout" style="margin-top:14px">換一個帳號登入</button>`;
+    else if (kind === 'login') g.innerHTML = `${logo}<p style="font-size:1.1rem;color:var(--ink);margin:8px 0 2px"><b>登入進出貨管家</b></p><p style="margin:0">請用負責人加入的 Google 帳號登入，大家會看到同一份資料。</p><button class="btn primary" data-act="login" style="margin-top:14px">用 Google 帳號登入</button>`;
+    else if (kind === 'denied') g.innerHTML = `${logo}<p style="font-size:1.1rem;color:var(--ink);margin:8px 0 2px"><b>這個帳號還沒有使用權限</b></p><p style="margin:0">${esc(be.user?.email || '')}<br>請負責人到「設定 → 成員」加入這個 Gmail，加入後重新整理即可。</p><button class="btn" data-act="logout" style="margin-top:14px">換一個帳號登入</button>`;
     else g.innerHTML = `${logo}<p style="font-size:1.1rem;color:var(--ink);margin:8px 0 2px"><b>無法連線到雲端</b></p><p style="margin:0">${esc(extra || '請確認網路後重新整理。')}</p><button class="btn" onclick="location.reload()" style="margin-top:14px">重新整理</button>`;
   }
 
@@ -1391,22 +1391,22 @@ body.gated .whbar{display:none!important}
     if (!CLOUD) {
       h += `<div class="info"><b>單機模式</b><span>資料只存在<b>這台裝置的瀏覽器</b>。換手機、換電腦或清除瀏覽器資料前，請先「下載備份」。要多人共用同一份資料，請依 SETUP.md 開啟雲端同步。</span></div>`;
     } else {
-      const role = be.role === 'owner' ? '店主' : be.role === 'staff' ? '店員' : '';
+      const role = be.role === 'owner' ? '負責人' : be.role === 'staff' ? '管理員' : '';
       h += `<div class="info"><b>☁ 雲端同步・多人共用</b><span>${esc(be.user?.name || '')}（${esc(be.user?.email || '')}）${role ? '・' + role : ''}</span><span>資料即時同步給所有成員；離線時會先存在這台裝置，恢復連線後自動上傳。</span></div>
         <div style="margin-bottom:6px"><button class="btn small" data-set="logout">登出</button></div>`;
       if (be.role === 'owner') {
         const owner = (CONFIG.ownerEmail || '').trim().toLowerCase();
         const mem = state.members.filter(m => m.email !== owner);
         h += `<div class="sec-title">成員（可以看到並記錄同一份資料的人）</div>
-          <div class="mem"><span>${esc(owner || be.user.email)}</span><span class="chip good">店主</span><span></span></div>
-          ${mem.map(m => `<div class="mem"><span>${esc(m.email)}</span><span class="chip ${m.role === 'owner' ? 'good' : 'off'}">${m.role === 'owner' ? '店主' : '店員'}</span><button class="btn small danger" data-set="rm-member" data-email="${esc(m.email)}">移除</button></div>`).join('')}
-          <div class="addmem"><input class="field" id="memEmail" type="email" placeholder="輸入對方的 Gmail" autocomplete="off"><select class="field" id="memRole" style="width:auto"><option value="staff">店員</option><option value="owner">店主</option></select><button class="btn primary" data-set="add-member">加入</button></div>
-          <p class="hint">店員可以記帳、盤點、新增商品；只有店主能管理成員。對方用這個 Gmail 登入就能使用。</p>`;
+          <div class="mem"><span>${esc(owner || be.user.email)}</span><span class="chip good">負責人</span><span></span></div>
+          ${mem.map(m => `<div class="mem"><span>${esc(m.email)}</span><span class="chip ${m.role === 'owner' ? 'good' : 'off'}">${m.role === 'owner' ? '負責人' : '管理員'}</span><button class="btn small danger" data-set="rm-member" data-email="${esc(m.email)}">移除</button></div>`).join('')}
+          <div class="addmem"><input class="field" id="memEmail" type="email" placeholder="輸入對方的 Gmail" autocomplete="off"><select class="field" id="memRole" style="width:auto"><option value="staff">管理員</option><option value="owner">負責人</option></select><button class="btn primary" data-set="add-member">加入</button></div>
+          <p class="hint">管理員可以記帳、盤點、新增商品；只有負責人能管理成員。對方用這個 Gmail 登入就能使用。</p>`;
       }
     }
     // 倉庫
     const can = canManageWh();
-    h += `<div class="sec-title">倉庫${can ? '' : '（只有店主可以新增或修改）'}</div>
+    h += `<div class="sec-title">倉庫${can ? '' : '（只有負責人可以新增或修改）'}</div>
       ${whList().map(w => { const n = state.products.reduce((a, p) => a + (C.st[p.id]?.wh[w.id] || 0), 0); return `<div class="mem"><span>${esc(w.name)}${w.active === false ? ' <span class="chip off">已停用</span>' : ''}<br><small class="muted">庫存合計 ${qf(r2(n))}</small></span>${can ? `<button class="btn small" data-set="wh-rename" data-id="${esc(w.id)}">改名</button><button class="btn small ${w.active === false ? '' : 'danger'}" data-set="wh-toggle" data-id="${esc(w.id)}">${w.active === false ? '啟用' : '停用'}</button>` : '<span></span><span></span>'}</div>`; }).join('')}
       ${can ? `<div class="addmem" style="grid-template-columns:minmax(0,1fr) auto"><input class="field" id="whNew" placeholder="新倉庫名稱，例如：成功路倉庫" autocomplete="off"><button class="btn primary" data-set="wh-add">新增倉庫</button></div>` : ''}
       <p class="hint">有兩個以上的倉庫時，畫面上方會出現倉庫切換，記帳可以選倉庫，也可以「調撥」。舊的紀錄都算在第一個倉庫。</p>`;
