@@ -1,0 +1,83 @@
+rules_version = '2';
+// 進出貨管家：Firestore 安全規則
+// 這份是 Firebase 後台「Firestore Database → 規則」的備份。改了這裡要記得貼回後台並按「發布」。
+// 負責人 Gmail 要和 index.html 的 CONFIG.ownerEmail 一樣。
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+    function me() {
+      return request.auth.token.email.lower();
+    }
+    function memberDoc() {
+      return /databases/$(database)/documents/members/$(me());
+    }
+    function isOwnerEmail() {
+      return me() == 'moton63568@gmail.com'.lower();
+    }
+    function role() {
+      return isOwnerEmail() ? 'owner' : get(memberDoc()).data.role;
+    }
+    function isMember() {
+      return signedIn() && (isOwnerEmail() || exists(memberDoc()));
+    }
+    function isOwner() {
+      return isMember() && role() == 'owner';
+    }
+    function isManager() {
+      return isMember() && (isOwnerEmail() || role() in ['owner', 'staff']);
+    }
+
+    match /members/{email} {
+      allow read: if isMember();
+      allow create, update: if isOwner()
+        && email == email.lower()
+        && request.resource.data.role in ['owner', 'staff', 'field'];
+      allow delete: if isOwner();
+    }
+
+    match /warehouses/{id} {
+      allow read: if isMember();
+      allow create, update: if isOwner() && request.resource.data.name is string;
+      allow delete: if false;
+    }
+
+    match /products/{id} {
+      allow read: if isMember();
+      allow create, update: if isMember()
+        && request.resource.data.name is string
+        && (isManager() || !request.resource.data.keys().hasAny(['cost', 'price']));
+      allow delete: if false;
+    }
+
+    match /prices/{productId} {
+      allow read, create, update: if isManager();
+      allow delete: if false;
+    }
+
+    match /moves/{id} {
+      allow read: if isMember();
+      allow create: if isMember()
+        && request.resource.data.by == me()
+        && request.resource.data.type in ['in', 'out', 'adj', 'void', 'xfer']
+        && !request.resource.data.keys().hasAny(['price']);
+      allow update: if isOwner()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['price'])
+        && !('price' in request.resource.data);
+      allow delete: if false;
+    }
+
+    match /money/{moveId} {
+      allow read, create, update: if isManager();
+      allow delete: if false;
+    }
+
+    match /moneyLog/{id} {
+      allow create: if isManager() && request.resource.data.by == me();
+      allow read: if isOwner();
+      allow update, delete: if false;
+    }
+  }
+}
