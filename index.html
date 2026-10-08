@@ -310,6 +310,12 @@ body.nomoney .money-only{display:none!important}
 .prc .field{min-height:40px;padding:6px 8px;text-align:right}
 .prc2{display:grid;grid-template-columns:minmax(0,1fr) 84px 84px auto;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
 .prc2 .field{min-height:40px;padding:6px 8px;text-align:right}
+.ptabs{max-width:460px}
+.ptabs button[aria-pressed="true"]{background:var(--surface);color:var(--ink);box-shadow:var(--shadow)}
+.ptabs .n{font-weight:700;color:var(--bad)}
+.prc .meta{font-size:.76rem;color:var(--muted)}
+.prc .hbtn{border:0;background:none;color:var(--accent);padding:0;font-size:.76rem;cursor:pointer}
+.phist{grid-column:1/-1;background:var(--sunk);border-radius:var(--r-sm);padding:8px 10px;font-size:.8rem;color:var(--muted)}
 .logrow{padding:8px 0;border-bottom:1px solid var(--line);font-size:.86rem}
 .logrow .sub{font-size:.78rem;color:var(--muted)}
 .mem select.field{min-height:36px;padding:4px 8px;width:auto}
@@ -429,6 +435,17 @@ body.nomoney .money-only{display:none!important}
   <!-- 金額確認（負責人、管理員） -->
   <section class="view" data-view="price" hidden>
     <div class="page-head"><h2>金額確認</h2><span class="muted" id="priceSum"></span></div>
+    <div class="seg ptabs" role="tablist" id="pTabs">
+      <button type="button" data-ptab="pending" aria-pressed="true">待確認 <span class="n" id="pN1"></span></button>
+      <button type="button" data-ptab="done" aria-pressed="false">已確認（可調整）</button>
+    </div>
+    <div class="card" id="pFilters" hidden style="margin-bottom:12px">
+      <div class="toolbar" style="margin-bottom:0">
+        <select class="field" id="pfMonth" style="width:auto;min-height:40px" aria-label="期間"></select>
+        <label class="search"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><input class="field" id="pfQ" type="search" placeholder="搜尋品號、商品、供應商、客戶" aria-label="搜尋"></label>
+        <div class="filters" id="pfType"></div>
+      </div>
+    </div>
     <div id="priceBody"></div>
   </section>
 
@@ -724,7 +741,9 @@ body.nomoney .money-only{display:none!important}
   function setMovePrice(m, price, isEdit) {
     const p = prodById(m.productId), label = `${dLabel(m.date)} ${TYPE_NAME[m.type]} ${p?.name || ''} × ${qf(m.qty)}`;
     if (!CLOUD) { m.price = num(price); localSave(); render(); return; }
-    const { db, F } = fb, ops = [['money', m.id, { price: num(price), confirmed: true, by: be.user.email, at: Date.now() }]];
+    const old = state.money[m.id] || {}, hist = [...(old.history || [])];
+    if (isEdit) hist.push({ from: px(m), to: num(price), by: be.user.email, byName: be.user.name || '', at: Date.now() });
+    const { db, F } = fb, ops = [['money', m.id, { price: num(price), confirmed: true, by: old.by && !isEdit ? old.by : be.user.email, byName: old.byName && !isEdit ? old.byName : (be.user.name || ''), at: old.at && !isEdit ? old.at : Date.now(), confirmedBy: old.confirmedBy || be.user.email, confirmedByName: old.confirmedByName || be.user.name || '', confirmedAt: old.confirmedAt || Date.now(), edits: (old.edits || 0) + (isEdit ? 1 : 0), history: hist.slice(-20) }]];
     if (isEdit) logMoney(ops, 'move', m.id, label, money(px(m)), money(num(price)));
     const b = F.writeBatch(db); ops.forEach(([c, id, d]) => b.set(F.doc(db, c, id), d)); b.commit().catch(cloudErr);
   }
@@ -1561,15 +1580,58 @@ body.nomoney .money-only{display:none!important}
     const prods = state.products.filter(p => isActive(p) && !hasPrice(p));
     return { moves, prods, total: moves.length + prods.length };
   }
+  const pf = { tab: 'pending', month: 'recent', type: 'all', q: '', open: {} };
+  function confirmedMoves() {
+    return liveMoves().filter(m => (m.type === 'in' || m.type === 'out') && !C.auto[m.id] && inScope(m));
+  }
   function renderPrice() {
-    const { moves, prods } = pendingPrice();
-    $('#priceSum').textContent = moves.length + prods.length ? `${moves.length + prods.length} 筆待處理` : '';
-    let h = `<div class="info">現場人員記的進出貨，單價是系統自動帶入的（進貨帶上次進價、出貨帶售價），確認後才算定案。你也可以先改成正確的金額再確認，修改都會留下紀錄。</div>`;
+    const pp = pendingPrice();
+    $('#pN1').textContent = pp.total ? pp.total : '';
+    $('#priceSum').textContent = pp.total ? `${pp.total} 筆待確認` : '';
+    document.querySelectorAll('#pTabs button').forEach(b => b.setAttribute('aria-pressed', b.dataset.ptab === pf.tab));
+    $('#pFilters').hidden = pf.tab !== 'done';
+    // 正在輸入金額時別整個重畫（有人同時記帳會觸發更新）
+    const ae = document.activeElement;
+    if (ae && ae.tagName === 'INPUT' && ae.closest('#priceBody')) return;
+    if (pf.tab === 'pending') return renderPending(pp);
+    renderDone();
+  }
+  function renderPending({ moves, prods }) {
+    let h = `<div class="info">現場人員記的進出貨，單價是系統自動帶入的（進貨帶上次進價、出貨帶售價），確認後才算定案，並移到「已確認」。你也可以先改成正確的金額再確認，修改都會留下紀錄。</div>`;
     h += `<div class="card adm-sec"><h3>未設定價格的商品 <small>${prods.length} 項</small></h3>${prods.length ? prods.map(p => `<div class="prc2" data-pid="${p.id}"><span style="min-width:0"><div class="nm">${esc(p.name)}</div><div class="sub">${codeTag(p)}${esc(p.spec || '')}</div></span><input class="field num pp-cost" type="number" inputmode="decimal" min="0" step="any" placeholder="成本" aria-label="${esc(p.name)} 成本"><input class="field num pp-price" type="number" inputmode="decimal" min="0" step="any" placeholder="售價" aria-label="${esc(p.name)} 售價"><button class="btn small primary" data-pr="setp" data-id="${p.id}">儲存</button></div>`).join('') : '<div class="ok-box">所有商品都有價格</div>'}</div>`;
     const list = sortedMoves(moves).reverse();
     h += `<div class="card adm-sec"><h3>自動帶價、待確認的紀錄 <small>${list.length} 筆</small>${list.length > 1 ? `<button class="btn small" data-pr="all">全部照現在的金額確認</button>` : ''}</h3>${list.length ? list.map(m => { const p = prodById(m.productId) || { name: '（找不到商品）' }; return `<div class="prc" data-id="${m.id}"><span style="min-width:0"><div class="nm">${m.type === 'in' ? '進' : '出'}・${esc(p.name)} × ${qf(m.qty)}</div><div class="sub">${esc([dLabel(m.date) + (occTime(m) ? ' ' + occTime(m) : ''), multiWh() ? whName(whOf(m)) : '', m.party, who(m)].filter(Boolean).join(' · '))}</div></span><input class="field num pm-price" type="number" inputmode="decimal" min="0" step="any" value="${px(m)}" aria-label="單價"><button class="btn small primary" data-pr="confirm" data-id="${m.id}">確認</button></div>`; }).join('') : '<div class="ok-box">沒有待確認的金額 👍</div>'}</div>`;
     $('#priceBody').innerHTML = h;
   }
+  function renderDone() {
+    const all = confirmedMoves();
+    // 期間選單
+    const months = [...new Set(all.map(m => m.date.slice(0, 7)))].sort().reverse();
+    if (pf.month !== 'recent' && pf.month !== 'all' && !months.includes(pf.month)) pf.month = 'recent';
+    $('#pfMonth').innerHTML = `<option value="recent">最近 30 天</option>` + months.map(m => `<option value="${m}">${ymLabel(m)}</option>`).join('') + `<option value="all">全部</option>`;
+    $('#pfMonth').value = pf.month;
+    const since = (() => { const d = new Date(); d.setDate(d.getDate() - 30); return dstr(d); })();
+    const q = pf.q.trim().toLowerCase();
+    const base = all.filter(m => (pf.month === 'all' || (pf.month === 'recent' ? m.date >= since : m.date.startsWith(pf.month))) && (!q || [prodById(m.productId)?.code, prodById(m.productId)?.name, m.party, m.note].join(' ').toLowerCase().includes(q)));
+    $('#pfType').innerHTML = [['all', '全部', base.length], ['in', '進貨', base.filter(m => m.type === 'in').length], ['out', '出貨', base.filter(m => m.type === 'out').length]].map(([k, l, n]) => `<button class="fchip" data-pft="${k}" aria-pressed="${pf.type === k}">${l}<span class="n">${n}</span></button>`).join('');
+    const list = sortedMoves(base.filter(m => pf.type === 'all' || m.type === pf.type)).reverse();
+    const LIM = 200;
+    const row = m => {
+      const p = prodById(m.productId) || { name: '（找不到商品）' }, mo = state.money[m.id] || {};
+      const conf = mo.confirmedByName || mo.confirmedBy || mo.byName || mo.by;
+      const meta = [mo.migrated && !mo.edits && !mo.confirmedBy ? '舊資料轉入' : conf ? `確認：${conf.split('@')[0]}${mo.confirmedAt || mo.at ? '・' + tLabel(mo.confirmedAt || mo.at) : ''}` : (mo.migrated ? '舊資料轉入' : m.price != null ? '原始紀錄' : ''), mo.edits ? `已修改 ${mo.edits} 次` : ''].filter(Boolean);
+      const hist = (mo.history || []).slice().reverse();
+      return `<div class="prc" data-id="${m.id}"><span style="min-width:0"><div class="nm">${m.type === 'in' ? '進' : '出'}・${esc(p.name)} × ${qf(m.qty)}　<span class="muted num" style="font-weight:normal">小計 ${money(num(m.qty) * px(m))}</span></div><div class="sub">${esc([dLabel(m.date) + (occTime(m) ? ' ' + occTime(m) : ''), multiWh() ? whName(whOf(m)) : '', m.party, who(m)].filter(Boolean).join(' · '))}</div><div class="meta">${esc(meta.join('・'))}${hist.length ? ` <button type="button" class="hbtn" data-pr="hist" data-id="${m.id}">${pf.open[m.id] ? '收起' : '看修改歷史'}</button>` : ''}</div></span><input class="field num pm-price" type="number" inputmode="decimal" min="0" step="any" value="${px(m)}" aria-label="單價"><button class="btn small" data-pr="save" data-id="${m.id}">儲存</button>${pf.open[m.id] ? `<div class="phist">${hist.map(x => `${money(x.from)} → <b>${money(x.to)}</b>・${esc((x.byName || x.by || '').split('@')[0])}・${tLabel(x.at)}`).join('<br>')}</div>` : ''}</div>`;
+    };
+    let h = `<div class="info">這裡是已經確認過的單價，直接改數字按「儲存」就能調整；每次調整都會記下誰改的、從多少改成多少。</div>`;
+    h += `<div class="card adm-sec"><h3>已確認的紀錄 <small>${list.length} 筆${scopeLabel() ? '・' + scopeLabel() : ''}</small></h3>${list.length ? list.slice(0, LIM).map(row).join('') : '<div class="empty" style="padding:16px">這個條件下沒有紀錄</div>'}${list.length > LIM ? `<p class="hint">只顯示最新的 ${LIM} 筆，請用上方的月份或搜尋縮小範圍。</p>` : ''}</div>`;
+    $('#priceBody').innerHTML = h;
+  }
+  $('#pTabs').addEventListener('click', e => { const b = e.target.closest('[data-ptab]'); if (!b) return; pf.tab = b.dataset.ptab; renderPrice(); });
+  $('#pfMonth').addEventListener('change', e => { pf.month = e.target.value; renderPrice(); });
+  $('#pfQ').addEventListener('input', e => { pf.q = e.target.value; renderDone(); });
+  $('#pfType').addEventListener('click', e => { const b = e.target.closest('[data-pft]'); if (!b) return; pf.type = b.dataset.pft; renderDone(); });
+  $('#priceBody').addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.classList.contains('pm-price')) { e.preventDefault(); e.target.closest('.prc')?.querySelector('[data-pr=save],[data-pr=confirm]')?.click(); } });
   $('#priceBody').addEventListener('click', e => {
     const b = e.target.closest('[data-pr]'); if (!b) return;
     if (b.dataset.pr === 'setp') {
@@ -1577,15 +1639,21 @@ body.nomoney .money-only{display:none!important}
       const c = row.querySelector('.pp-cost').value, s = row.querySelector('.pp-price').value;
       if (c === '' && s === '') { toast('請至少填成本或售價'); return; }
       putProduct({ ...p, cost: c === '' ? 0 : num(c), price: s === '' ? 0 : num(s) }); toast(`已設定「${p.name}」的價格`);
-    } else if (b.dataset.pr === 'confirm') {
+    } else if (b.dataset.pr === 'confirm' || b.dataset.pr === 'save') {
       const m = state.moves.find(x => x.id === b.dataset.id); if (!m) return;
-      const v = num(b.closest('.prc').querySelector('.pm-price').value), auto = px(m);
-      setMovePrice(m, v, Math.abs(v - auto) > 1e-9); toast(Math.abs(v - auto) > 1e-9 ? '已修改並確認' : '已確認');
+      const inp = b.closest('.prc').querySelector('.pm-price'), v = num(inp.value), cur = px(m), changed = Math.abs(v - cur) > 1e-9;
+      if (inp.value === '' || v < 0) { toast('請輸入正確的金額'); inp.focus(); return; }
+      if (b.dataset.pr === 'save' && !changed) { toast('金額沒有變動'); return; }
+      inp.blur();
+      setMovePrice(m, v, changed);
+      toast(b.dataset.pr === 'save' ? `已調整為 ${money(v)}，修改紀錄已保存` : changed ? '已修改並確認' : '已確認');
+    } else if (b.dataset.pr === 'hist') {
+      pf.open[b.dataset.id] = !pf.open[b.dataset.id]; renderDone();
     } else if (b.dataset.pr === 'all') {
       const { moves } = pendingPrice(); if (!confirm(`把 ${moves.length} 筆自動帶入的單價全部照現在的金額確認？`)) return;
       if (!CLOUD) return;
-      const { db, F } = fb;
-      for (let i = 0; i < moves.length; i += 400) { const bt = F.writeBatch(db); moves.slice(i, i + 400).forEach(m => bt.set(F.doc(db, 'money', m.id), { price: px(m), confirmed: true, by: be.user.email, at: Date.now() })); bt.commit().catch(cloudErr); }
+      const { db, F } = fb, now = Date.now();
+      for (let i = 0; i < moves.length; i += 400) { const bt = F.writeBatch(db); moves.slice(i, i + 400).forEach(m => bt.set(F.doc(db, 'money', m.id), { price: px(m), confirmed: true, by: be.user.email, byName: be.user.name || '', at: now, confirmedBy: be.user.email, confirmedByName: be.user.name || '', confirmedAt: now, edits: 0, history: [] })); bt.commit().catch(cloudErr); }
       toast(`已確認 ${moves.length} 筆`);
     }
   });
