@@ -705,12 +705,13 @@ body.nomoney .money-only{display:none!important}
     for (const m of list) {
       const { price, ...rest } = m;
       ops.push(['moves', m.id, { ...rest, serverAt: F.serverTimestamp() }]);
-      if (mgr && price != null && (m.type === 'in' || m.type === 'out')) ops.push(['money', m.id, { price: num(price), confirmed: true, by: be.user.email, at: Date.now() }]);
+      if (mgr && price != null && (m.type === 'in' || m.type === 'out')) ops.push(['money', m.id, { price: num(price), confirmed: true, by: be.user.email, at: Date.now(), serverAt: F.serverTimestamp() }]);
     }
+    showLocal(ops);
     for (let i = 0; i < ops.length; i += 400) {
       const b = F.writeBatch(db);
       ops.slice(i, i + 400).forEach(([c, id, d]) => b.set(F.doc(db, c, id), d));
-      b.commit().catch(cloudErr);   // 離線時會先存在本機，恢復連線後自動上傳
+      commitBatch(b);   // 離線時會先存在本機，恢復連線後自動上傳
     }
   }
   // 新增 / 更新商品主檔（商品不刪除，只停用）
@@ -743,9 +744,10 @@ body.nomoney .money-only{display:none!important}
     if (!CLOUD) { m.price = num(price); localSave(); render(); return; }
     const old = state.money[m.id] || {}, hist = [...(old.history || [])];
     if (isEdit) hist.push({ from: px(m), to: num(price), by: be.user.email, byName: be.user.name || '', at: Date.now() });
-    const { db, F } = fb, ops = [['money', m.id, { price: num(price), confirmed: true, by: old.by && !isEdit ? old.by : be.user.email, byName: old.byName && !isEdit ? old.byName : (be.user.name || ''), at: old.at && !isEdit ? old.at : Date.now(), confirmedBy: old.confirmedBy || be.user.email, confirmedByName: old.confirmedByName || be.user.name || '', confirmedAt: old.confirmedAt || Date.now(), edits: (old.edits || 0) + (isEdit ? 1 : 0), history: hist.slice(-20) }]];
+    const { db, F } = fb, ops = [['money', m.id, { price: num(price), confirmed: true, by: old.by && !isEdit ? old.by : be.user.email, byName: old.byName && !isEdit ? old.byName : (be.user.name || ''), at: old.at && !isEdit ? old.at : Date.now(), confirmedBy: old.confirmedBy || be.user.email, confirmedByName: old.confirmedByName || be.user.name || '', confirmedAt: old.confirmedAt || Date.now(), edits: (old.edits || 0) + (isEdit ? 1 : 0), history: hist.slice(-20), serverAt: F.serverTimestamp() }]];
     if (isEdit) logMoney(ops, 'move', m.id, label, money(px(m)), money(num(price)));
-    const b = F.writeBatch(db); ops.forEach(([c, id, d]) => b.set(F.doc(db, c, id), d)); b.commit().catch(cloudErr);
+    showLocal(ops);
+    const b = F.writeBatch(db); ops.forEach(([c, id, d]) => b.set(F.doc(db, c, id), d)); commitBatch(b);
   }
   const putProduct = p => putProducts([p]);
   const stripMoney = p => { if (!canMoney()) { delete p.cost; delete p.price; } return p; };
@@ -775,7 +777,7 @@ body.nomoney .money-only{display:none!important}
   function updatePill() {
     if (!CLOUD) return;
     const name = be.user?.email?.split('@')[0] || '';
-    setPill(!navigator.onLine ? '離線中・連線後自動同步' : (pend.products || pend.moves) ? '同步中…' : `☁ 已同步・${name}`);
+    setPill(!navigator.onLine ? '離線中・連線後自動同步' : (pend.products || pendingWrites) ? '同步中…' : `☁ 已同步・${name}`);
   }
   window.addEventListener('online', updatePill); window.addEventListener('offline', updatePill);
 
@@ -786,33 +788,98 @@ body.nomoney .money-only{display:none!important}
     return m ? (m.role === 'owner' ? 'owner' : m.role === 'field' ? 'field' : 'staff') : null;
   }
 
-  let moneyUnsubs = [];
-  function stopListeners() { unsubs.forEach(u => u()); unsubs = []; stopMoney(); }
-  function stopMoney() { moneyUnsubs.forEach(u => u()); moneyUnsubs = []; state.prices = {}; state.money = {}; state.moneyLog = []; }
+  /* ---------- 增量同步：只向雲端要「新的」紀錄 ----------
+     進出貨紀錄（moves）只會新增；金額（money）每次寫入都會重新蓋上雲端時間章 serverAt。
+     所以打開網站時：先讀這台裝置的快取（不花額度），再只向雲端要 serverAt 晚於快取裡最新那筆的資料。
+     新裝置、清過瀏覽器資料、或上次沒有完整同步過 → 完整讀一次。
+     商品、倉庫、成員、價格的筆數少，照舊每次全讀。 */
+  const SYNC_OVERLAP = 10 * 60 * 1000;          // 往前多要 10 分鐘：寧可重複拿到（同 id 會覆蓋），也不要漏
+  const SYNC_OK_KEY = 'stockbook-synced-';      // + 集合名稱：這台裝置曾經完整同步過，快取可以信任
+  const live = { moves: new Map(), money: new Map() };
+  const docMove = (id, d) => { const x = { ...d, id }; delete x.serverAt; return x; };
+  const docMoney = d => { const x = { ...d }; delete x.serverAt; return x; };
+  function publish(name) {
+    if (name === 'moves') state.moves = [...live.moves.values()];
+    else state.money = Object.fromEntries(live.money);
+  }
+  // 自己剛寫的資料先放進畫面（離線也看得到），雲端確認後會被同一筆覆蓋
+  function showLocal(ops) {
+    let mv = false, mn = false;
+    for (const [c, id, d] of ops) {
+      if (c === 'moves') { live.moves.set(id, docMove(id, d)); mv = true; }
+      else if (c === 'money') { live.money.set(id, docMoney(d)); mn = true; }
+    }
+    if (mv) publish('moves'); if (mn) publish('money');
+    if (mv || mn) scheduleRender();
+  }
+  let pendingWrites = 0;
+  function commitBatch(b) {
+    pendingWrites++; updatePill();
+    return b.commit().catch(cloudErr).finally(() => { pendingWrites--; updatePill(); });
+  }
+  const syncedBefore = name => { try { return localStorage.getItem(SYNC_OK_KEY + name) === '1'; } catch (e) { return false; } };
+  const markSynced = name => { try { localStorage.setItem(SYNC_OK_KEY + name, '1'); } catch (e) {} };
+  function forgetSynced() { try { ['moves', 'money'].forEach(n => localStorage.removeItem(SYNC_OK_KEY + n)); } catch (e) {} }
+  // 監聽一個集合，只拿新資料。isLive() 變成 false 代表已經登出 / 換人，就不要再開監聽。
+  async function listenNew(name, toValue, isLive, onFirst, onErr) {
+    const { db, F } = fb, col = F.collection(db, name), map = live[name];
+    let since = null;
+    if (syncedBefore(name)) {
+      try {
+        const cached = await F.getDocsFromCache(col);
+        let max = 0;
+        cached.docs.forEach(d => { map.set(d.id, toValue(d.id, d.data())); const t = d.get('serverAt'); if (t && t.toMillis) max = Math.max(max, t.toMillis()); });
+        if (max) since = F.Timestamp.fromMillis(max - SYNC_OVERLAP);
+        publish(name);
+      } catch (e) {}
+    }
+    if (!isLive()) return null;
+    const q = since ? F.query(col, F.where('serverAt', '>=', since)) : col;
+    let first = true;
+    return F.onSnapshot(q, { includeMetadataChanges: true }, snap => {
+      // 只處理新增 / 變更；紀錄不會被刪除，'removed' 只會是本機還沒上傳的暫時狀態，忽略
+      snap.docChanges().forEach(ch => { if (ch.type !== 'removed') map.set(ch.doc.id, toValue(ch.doc.id, ch.doc.data())); });
+      publish(name);
+      if (!snap.metadata.fromCache) markSynced(name);
+      if (first) { first = false; onFirst && onFirst(); }
+      scheduleRender();
+    }, onErr);
+  }
+  // 重新完整同步一次（萬一資料看起來不對，或負責人轉換過舊資料）
+  function fullResync() {
+    if (!confirm('會從雲端重新下載全部紀錄一次（會用掉較多讀取額度），確定？')) return;
+    forgetSynced(); location.reload();
+  }
+
+  let moneyUnsubs = [], moneyOn = false, moneyGen = 0, session = 0;
+  function stopListeners() { session++; unsubs.forEach(u => u()); unsubs = []; live.moves.clear(); stopMoney(); }
+  function stopMoney() { moneyOn = false; moneyGen++; moneyUnsubs.forEach(u => u()); moneyUnsubs = []; live.money.clear(); state.prices = {}; state.money = {}; state.moneyLog = []; }
   // 只有負責人 / 管理員才去讀金額（現場人員的裝置根本不會收到）
   function syncMoneyListeners() {
     if (!CLOUD || !fb) return;
     const want = canMoney();
-    if (!want) { if (moneyUnsubs.length) stopMoney(); return; }
-    if (moneyUnsubs.length) return;
-    const { db, F } = fb;
+    if (!want) { if (moneyOn) stopMoney(); return; }
+    if (moneyOn) return;
+    moneyOn = true;
+    const { db, F } = fb, my = session, gen = moneyGen, isLive = () => moneyOn && my === session && gen === moneyGen;
     moneyUnsubs.push(F.onSnapshot(F.collection(db, 'prices'), s => { state.prices = Object.fromEntries(s.docs.map(d => [d.id, d.data()])); scheduleRender(); }, () => {}));
-    moneyUnsubs.push(F.onSnapshot(F.collection(db, 'money'), s => { state.money = Object.fromEntries(s.docs.map(d => [d.id, d.data()])); scheduleRender(); }, () => {}));
+    listenNew('money', (id, d) => docMoney(d), isLive, null, () => {}).then(u => { if (!u) return; if (isLive()) moneyUnsubs.push(u); else u(); });
     if (be.role === 'owner') moneyUnsubs.push(F.onSnapshot(F.collection(db, 'moneyLog'), s => { state.moneyLog = s.docs.map(d => ({ ...d.data(), id: d.id })).sort((a, b) => b.at - a.at); if (ui.view === 'admin') scheduleRender(); }, () => {}));
   }
   function startListeners() {
-    const { db, F } = fb;
+    const { db, F } = fb, my = session, isLive = () => my === session;
     got = { products: false, moves: false }; pend = {};
-    const onErr = err => { if (err.code === 'permission-denied') { stopListeners(); gate('denied'); } else gate('error', err.message); };
+    const onErr = err => {
+      if (!isLive()) return;
+      if (err.code === 'permission-denied') { stopListeners(); state.products = []; state.moves = []; gate('denied'); }
+      else gate('error', err.message);
+    };
     const ready = () => { if (got.products && got.moves) { gate(null); scheduleRender(); } updatePill(); };
     unsubs.push(F.onSnapshot(F.collection(db, 'products'), { includeMetadataChanges: true }, snap => {
       state.products = snap.docs.map(d => normProduct({ ...d.data(), id: d.id }));
       got.products = true; pend.products = snap.metadata.hasPendingWrites; ready();
     }, onErr));
-    unsubs.push(F.onSnapshot(F.collection(db, 'moves'), { includeMetadataChanges: true }, snap => {
-      state.moves = snap.docs.map(d => { const x = { ...d.data(), id: d.id }; delete x.serverAt; return x; });
-      got.moves = true; pend.moves = snap.metadata.hasPendingWrites; ready();
-    }, onErr));
+    listenNew('moves', docMove, isLive, () => { got.moves = true; ready(); }, onErr).then(u => { if (!u) return; if (isLive()) unsubs.push(u); else u(); });
     unsubs.push(F.onSnapshot(F.collection(db, 'members'), snap => {
       state.members = snap.docs.map(d => ({ ...d.data(), email: d.id }));
       be.role = computeRole(); syncMoneyListeners(); scheduleRender(); if ($('#setDlg').open) renderSettings();
@@ -832,7 +899,7 @@ body.nomoney .money-only{display:none!important}
     catch (e) { return gate('error', '載入 Firebase 失敗，請確認網路後重新整理。'); }
     const app = A.initializeApp(CONFIG.firebase);
     let db;
-    try { db = F.initializeFirestore(app, { localCache: F.persistentLocalCache({ tabManager: F.persistentMultipleTabManager() }) }); }
+    try { db = F.initializeFirestore(app, { localCache: F.persistentLocalCache({ tabManager: F.persistentMultipleTabManager(), cacheSizeBytes: F.CACHE_SIZE_UNLIMITED }) }); }
     catch (e) { db = F.getFirestore(app); }
     fb = { db, auth: U.getAuth(app), F, U };
     U.onAuthStateChanged(fb.auth, user => {
@@ -1551,7 +1618,8 @@ body.nomoney .money-only{display:none!important}
       h += `<div class="info"><b>單機模式</b><span>資料只存在<b>這台裝置的瀏覽器</b>。換手機、換電腦或清除瀏覽器資料前，請先「下載備份」。要多人共用同一份資料，請依 SETUP.md 開啟雲端同步。</span></div>`;
     } else {
       h += `<div class="info"><b>☁ 雲端同步・多人共用</b><span>${esc(be.user?.name || '')}（${esc(be.user?.email || '')}）${be.role ? '・' + ROLE_NAME[be.role] : ''}</span><span>資料即時同步給所有成員；離線時會先存在這台裝置，恢復連線後自動上傳。</span></div>
-        <div style="margin-bottom:6px"><button class="btn small" data-set="logout">登出</button></div>`;
+        <div style="margin-bottom:6px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn small" data-set="logout">登出</button><button class="btn small" data-set="resync">重新完整同步</button></div>
+        <p class="hint">平常打開網站只會下載新的紀錄，省雲端額度。如果數字看起來怪怪的，再按「重新完整同步」。</p>`;
     }
     const links = [];
     if (isOwnerRole()) links.push(`<button class="btn small primary" data-set="go-admin">前往後台</button>`);
@@ -1653,7 +1721,9 @@ body.nomoney .money-only{display:none!important}
       const { moves } = pendingPrice(); if (!confirm(`把 ${moves.length} 筆自動帶入的單價全部照現在的金額確認？`)) return;
       if (!CLOUD) return;
       const { db, F } = fb, now = Date.now();
-      for (let i = 0; i < moves.length; i += 400) { const bt = F.writeBatch(db); moves.slice(i, i + 400).forEach(m => bt.set(F.doc(db, 'money', m.id), { price: px(m), confirmed: true, by: be.user.email, byName: be.user.name || '', at: now, confirmedBy: be.user.email, confirmedByName: be.user.name || '', confirmedAt: now, edits: 0, history: [] })); bt.commit().catch(cloudErr); }
+      const ops = moves.map(m => ['money', m.id, { price: px(m), confirmed: true, by: be.user.email, byName: be.user.name || '', at: now, confirmedBy: be.user.email, confirmedByName: be.user.name || '', confirmedAt: now, edits: 0, history: [], serverAt: F.serverTimestamp() }]);
+      showLocal(ops);
+      for (let i = 0; i < ops.length; i += 400) { const bt = F.writeBatch(db); ops.slice(i, i + 400).forEach(([c, id, d]) => bt.set(F.doc(db, c, id), d)); commitBatch(bt); }
       toast(`已確認 ${moves.length} 筆`);
     }
   });
@@ -1716,7 +1786,7 @@ body.nomoney .money-only{display:none!important}
       ops.push(['update', 'products', p.id, { cost: F.deleteField(), price: F.deleteField() }]);
     }
     for (const m of mv) {
-      if ((m.type === 'in' || m.type === 'out') && !state.money[m.id]) ops.push(['set', 'money', m.id, { price: num(m.price), confirmed: true, by: be.user.email, at: Date.now(), migrated: true }]);
+      if ((m.type === 'in' || m.type === 'out') && !state.money[m.id]) ops.push(['set', 'money', m.id, { price: num(m.price), confirmed: true, by: be.user.email, at: Date.now(), migrated: true, serverAt: F.serverTimestamp() }]);
       ops.push(['update', 'moves', m.id, { price: F.deleteField() }]);
     }
     try {
@@ -1726,6 +1796,8 @@ body.nomoney .money-only{display:none!important}
         await b.commit();
         toast(`轉換中… ${Math.min(i + 400, ops.length)} / ${ops.length}`);
       }
+      // 進出貨紀錄只同步新資料，舊紀錄被移除的單價不會再傳回來，這台裝置自己拿掉
+      mv.forEach(m => delete m.price); publish('moves'); scheduleRender();
       toast('✓ 轉換完成，現在可以安全加入現場人員了');
     } catch (e) { cloudErr(e); }
   }
@@ -1763,6 +1835,7 @@ body.nomoney .money-only{display:none!important}
     else if (k === 'sample') { if (state.products.length && !confirm('載入範例會取代目前資料，確定？')) return; loadSample(); $('#setDlg').close(); }
     else if (k === 'clear') { if (!confirm('確定清除所有商品與進出貨紀錄？此動作無法復原。')) return; state.products = []; state.moves = []; state.warehouses = []; localSave(); $('#setDlg').close(); toast('已清除'); render(); }
     else if (k === 'logout') logout();
+    else if (k === 'resync') fullResync();
     else if (k === 'wh-add') {
       const name = $('#whNew').value.trim(); if (!name) { toast('請輸入倉庫名稱'); $('#whNew').focus(); return; }
       if (whList().some(w => w.name === name)) { toast('已經有同名的倉庫'); return; }
