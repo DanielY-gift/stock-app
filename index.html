@@ -461,9 +461,10 @@ body.gated .whbar{display:none!important}
         <div><label class="fl" for="mPrice" id="mPriceLbl">單價</label><input class="field num" id="mPrice" type="number" inputmode="decimal" min="0" step="any" placeholder="0"></div>
       </div>
       <div class="frow fgroup">
-        <div><label class="fl" for="mParty" id="mPartyLbl">供應商</label><input class="field" id="mParty" list="partyList" autocomplete="off"><datalist id="partyList"></datalist></div>
         <div><label class="fl" for="mDate">日期</label><input class="field" id="mDate" type="date"></div>
+        <div><label class="fl" for="mTime">時間</label><input class="field" id="mTime" type="time"></div>
       </div>
+      <div class="fgroup"><label class="fl" for="mParty" id="mPartyLbl">供應商</label><input class="field" id="mParty" list="partyList" autocomplete="off"><datalist id="partyList"></datalist></div>
       <div class="fgroup"><label class="fl" for="mNote">備註</label><input class="field" id="mNote" placeholder="選填，例如：訂單編號"></div>
       <div class="summary" id="mSummary"></div>
     </div>
@@ -597,6 +598,10 @@ body.gated .whbar{display:none!important}
   const isActive = p => p.active !== false;
   const codeTag = p => p && p.code ? `<span class="code">${esc(p.code)}</span>` : '';
   const who = m => m.byName || m.by || '';
+  const nowHM = () => { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+  const hmOf = t => { const d = new Date(t); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+  // 發生時間：新紀錄有 time 欄；舊紀錄若在同一天記的，就用記錄時間
+  const occTime = m => m.time || (m.createdAt > 1e12 && dstr(new Date(m.createdAt)) === m.date ? hmOf(m.createdAt) : '');
 
   /* ---------- 倉庫 ---------- */
   const MAIN_WH = 'main';   // 沒有指定倉庫的舊紀錄都算在這個倉庫
@@ -751,7 +756,13 @@ body.gated .whbar{display:none!important}
   // 出貨成本 = 數量 × 當下平均成本 → 毛利；盤點調整以當下平均成本計價（盤盈 / 盤虧）。
   const TYPE_RANK = { in: 0, xfer: 1, out: 2, adj: 3 };
   function sortedMoves(list) {
-    return [...list].sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : (TYPE_RANK[a.type] - TYPE_RANK[b.type]) || (a.createdAt || 0) - (b.createdAt || 0));
+    const k = new Map(list.map(m => [m, occTime(m)]));
+    return [...list].sort((a, b) => {
+      if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+      const ta = k.get(a), tb = k.get(b);
+      if (ta && tb && ta !== tb) return ta < tb ? -1 : 1;
+      return (TYPE_RANK[a.type] - TYPE_RANK[b.type]) || (a.createdAt || 0) - (b.createdAt || 0);
+    });
   }
   let V = {};   // 被沖銷的紀錄 id → 沖銷紀錄
   function buildVoids() { V = {}; for (const m of state.moves) if (m.type === 'void' && m.voidOf) V[m.voidOf] = m; }
@@ -862,7 +873,8 @@ body.gated .whbar{display:none!important}
     const voided = !!V[m.id];
     const amt = num(m.qty) * num(m.price);
     const whTxt = m.type === 'xfer' ? `${whName(m.fromWh)} → ${whName(m.toWh)}` : multiWh() || whOf(m) !== MAIN_WH ? whName(whOf(m)) : '';
-    const sub = [showDate ? dLabel(m.date) : '', whTxt, m.party, m.note, who(m)].filter(Boolean).join(' · ');
+    const tt = occTime(m);
+    const sub = [showDate ? dLabel(m.date) + (tt ? ' ' + tt : '') : tt, whTxt, m.party, m.note, who(m)].filter(Boolean).join(' · ');
     let right;
     if (m.type === 'xfer') right = `<b>${qf(m.qty)}</b><small>${voided ? '已沖銷' : '調撥'}</small>`;
     else if (m.type === 'adj') { const v = C.adjv[m.id]; right = `<b>${voided ? '—' : money(v)}</b><small>${voided ? '已沖銷' : (m.qty > 0 ? '盤盈' : '盤虧')}</small>`; }
@@ -1052,7 +1064,7 @@ body.gated .whbar{display:none!important}
 
   /* ---------- 記一筆 / 調撥 / 檢視紀錄 / 沖銷 ---------- */
   const md = { type: 'out', view: null, replacing: null, readonly: false, priceTouched: false };
-  const MOVE_FIELDS = ['#mCode', '#mScan', '#mProduct', '#mQty', '#mPrice', '#mParty', '#mDate', '#mNote', '#mWh', '#mWh2'];
+  const MOVE_FIELDS = ['#mCode', '#mScan', '#mProduct', '#mQty', '#mPrice', '#mParty', '#mDate', '#mTime', '#mNote', '#mWh', '#mWh2'];
   const TYPE_NAME = { in: '進貨', out: '出貨', adj: '盤點調整', xfer: '調撥' };
   const LASTWH_KEY = 'stockbook-lastwh';
   function productOptions(selected) {
@@ -1082,6 +1094,7 @@ body.gated .whbar{display:none!important}
     $('#mPrice').value = src ? src.price : '';
     $('#mParty').value = src?.party || '';
     $('#mDate').value = src?.date || today();
+    $('#mTime').value = src ? occTime(src) : nowHM();
     $('#mNote').value = src?.note || '';
     // 倉庫
     const w1 = src ? (src.type === 'xfer' ? src.fromWh : whOf(src)) : defaultWh();
@@ -1098,7 +1111,9 @@ body.gated .whbar{display:none!important}
     let info = '';
     if (view) {
       const vr = V[view.id];
-      info = `<div class="info"><span>記錄者：${esc(who(view) || '（單機）')}${view.createdAt ? '・' + tLabel(view.createdAt) : ''}</span>${view.batch ? `<span>批號：${esc(view.batch)}</span>` : ''}</div>`;
+      const occ = `${view.date.replace(/-/g, '/')}${occTime(view) ? ' ' + occTime(view) : ''}`;
+      const late = view.createdAt > 1e12 && occTime(view) && Math.abs(new Date(`${view.date}T${occTime(view)}`) - view.createdAt) > 30 * 60e3;
+      info = `<div class="info"><span>發生時間：${occ}</span><span>記錄時間：${view.createdAt > 1e12 ? tLabel(view.createdAt) : '—'}・${esc(who(view) || '（單機）')}${late ? '（補記）' : ''}</span>${view.batch ? `<span>批號：${esc(view.batch)}</span>` : ''}</div>`;
       if (vr) info += `<div class="info bad"><b>已沖銷</b><span>${esc(who(vr) || '（單機）')}・${tLabel(vr.createdAt)}${vr.note ? '・' + esc(vr.note) : ''}</span><span>這筆保留作為紀錄，但不再計入庫存與營業額。</span></div>`;
       else info += `<div class="info">紀錄不能修改或刪除。記錯了請按「沖銷」作廢，或「沖銷並重記」改成正確的內容。</div>`;
     } else if (md.replacing) info = `<div class="info warn">儲存後，原本那筆會標示為「已沖銷」，並新增這筆正確的紀錄。</div>`;
@@ -1189,7 +1204,7 @@ body.gated .whbar{display:none!important}
   ['#mWh', '#mWh2'].forEach(s => $(s).addEventListener('change', updateMoveSummary));
   $('#mPrice').addEventListener('input', () => md.priceTouched = true);
   document.querySelectorAll('[data-step]').forEach(b => b.addEventListener('click', () => { $('#mQty').value = Math.max(0, num($('#mQty').value) + +b.dataset.step); updateMoveSummary(); }));
-  const voidRec = (m, note) => ({ id: uid(), createdAt: Date.now(), type: 'void', voidOf: m.id, productId: m.productId, qty: 0, price: 0, party: '', date: today(), note });
+  const voidRec = (m, note) => ({ id: uid(), createdAt: Date.now(), type: 'void', voidOf: m.id, productId: m.productId, qty: 0, price: 0, party: '', date: today(), time: nowHM(), note });
   $('#moveForm').addEventListener('submit', e => {
     e.preventDefault();
     if (md.readonly) return;
@@ -1202,7 +1217,7 @@ body.gated .whbar{display:none!important}
     const cc = md.replacing ? compute(md.replacing.id) : C;
     const cur = r2(cc.st[pid].wh[w1] || 0), wl = multiWh() ? `「${whName(w1)}」` : '';
     if ((md.type === 'out' || x) && q > cur && !confirm(`${wl}目前庫存只有 ${qf(cur)}，確定要${x ? '調出' : '出貨'} ${qf(q)} 嗎？\n（庫存會變成負數，代表帳上少貨，之後記得補進貨或盤點）`)) return;
-    const base = { id: uid(), createdAt: Date.now(), type: md.type, productId: pid, qty: q, date: $('#mDate').value || today(), note: $('#mNote').value.trim() };
+    const base = { id: uid(), createdAt: Date.now(), type: md.type, productId: pid, qty: q, date: $('#mDate').value || today(), time: $('#mTime').value || nowHM(), note: $('#mNote').value.trim() };
     const rec = x ? { ...base, fromWh: w1, toWh: w2, price: Math.round(cc.st[pid].avg * 100) / 100, party: '' }
                   : { ...base, warehouseId: w1, price: pr, party: $('#mParty').value.trim() };
     const list = [];
@@ -1269,7 +1284,7 @@ body.gated .whbar{display:none!important}
       const p = { id: uid(), createdAt: Date.now(), active: true, createdBy: be.user?.email || '', ...data };
       putProduct(p);
       const open = num($('#pOpen').value);
-      if (open > 0) addMoves([{ id: uid(), createdAt: Date.now(), type: 'in', productId: p.id, warehouseId: $('#pOpenWh').value || MAIN_WH, qty: open, price: p.cost, party: '', date: today(), note: '期初庫存' }]);
+      if (open > 0) addMoves([{ id: uid(), createdAt: Date.now(), type: 'in', productId: p.id, warehouseId: $('#pOpenWh').value || MAIN_WH, qty: open, price: p.cost, party: '', date: today(), time: nowHM(), note: '期初庫存' }]);
       toast(`已新增：${name}`);
     }
     $('#prodDlg').close();
@@ -1377,7 +1392,7 @@ body.gated .whbar{display:none!important}
     const diffs = state.products.filter(p => isActive(p) && counted(p.id)).map(p => { const st = C.st[p.id], sys = csys(p.id); return { p, sys, cnt: num(draft.counts[p.id]), d: r2(num(draft.counts[p.id]) - sys), avg: st.avg }; }).filter(x => x.d !== 0);
     const total = state.products.filter(isActive).length;
     if (!confirm(`盤點單 ${draft.id}${multiWh() ? '（' + whName(draft.wh) + '）' : ''}\n已盤 ${s.n} / ${total} 項，有差異 ${diffs.length} 項。\n盤盈 ${sq(s.gainQ)}（${money(s.gainV)}）　盤虧 ${qf(s.lossQ)}（${money(s.lossV)}）\n${s.n < total ? `\n沒盤到的 ${total - s.n} 項不會調整。` : ''}\n確定完成盤點？系統會新增「盤點調整」紀錄，讓帳上庫存等於實盤數量。`)) return;
-    if (diffs.length) addMoves(diffs.map(x => ({ id: uid(), createdAt: Date.now(), type: 'adj', productId: x.p.id, warehouseId: draft.wh, qty: x.d, price: Math.round(x.avg * 100) / 100, party: '', date: today(), note: `盤點：帳上 ${qf(x.sys)} → 實盤 ${qf(x.cnt)}`, batch: draft.id })));
+    if (diffs.length) addMoves(diffs.map(x => ({ id: uid(), createdAt: Date.now(), type: 'adj', productId: x.p.id, warehouseId: draft.wh, qty: x.d, price: Math.round(x.avg * 100) / 100, party: '', date: today(), time: nowHM(), note: `盤點：帳上 ${qf(x.sys)} → 實盤 ${qf(x.cnt)}`, batch: draft.id })));
     const id = draft.id;
     draft = freshDraft(draft.wh); saveDraft();
     toast(diffs.length ? `盤點 ${id} 完成，調整了 ${diffs.length} 項` : '盤點完成：帳實相符，不需要調整 👍');
@@ -1494,12 +1509,12 @@ body.gated .whbar{display:none!important}
   function exportCsv() {
     buildVoids(); C = compute();
     const cell = v => { const s = String(v ?? ''); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-    const rows = [['日期', '類型', '倉庫', '品號', '商品', '規格', '數量', '單位', '單價', '金額', '成本', '毛利', '供應商/客戶', '備註', '狀態', '記錄者', '盤點單']];
+    const rows = [['日期', '時間', '類型', '倉庫', '品號', '商品', '規格', '數量', '單位', '單價', '金額', '成本', '毛利', '供應商/客戶', '備註', '狀態', '記錄者', '盤點單']];
     for (const m of sortedMoves(records())) {
       const p = prodById(m.productId) || {}, v = !!V[m.id];
       const amt = m.type === 'adj' ? Math.round(C.adjv[m.id] || 0) : m.type === 'xfer' ? '' : m.qty * m.price;
       const c = m.type === 'out' && !v ? Math.round(C.cogs[m.id] || 0) : '';
-      rows.push([m.date, TYPE_NAME[m.type], m.type === 'xfer' ? `${whName(m.fromWh)} → ${whName(m.toWh)}` : whName(whOf(m)), p.code, p.name, p.spec, m.qty, p.unit, m.price, v ? '' : amt, c, m.type === 'out' && !v ? Math.round(amt - c) : '', m.party, m.note, v ? '已沖銷' : '有效', who(m), m.batch || '']);
+      rows.push([m.date, occTime(m), TYPE_NAME[m.type], m.type === 'xfer' ? `${whName(m.fromWh)} → ${whName(m.toWh)}` : whName(whOf(m)), p.code, p.name, p.spec, m.qty, p.unit, m.price, v ? '' : amt, c, m.type === 'out' && !v ? Math.round(amt - c) : '', m.party, m.note, v ? '已沖銷' : '有效', who(m), m.batch || '']);
     }
     download(`進出貨明細-${today()}.csv`, '﻿' + rows.map(r => r.map(cell).join(',')).join('\n'), 'text/csv');
   }
@@ -1659,9 +1674,9 @@ body.gated .whbar{display:none!important}
   })();
 
   const P_COLS = ['品號', '商品名稱（必填）', '規格', '分類', '單位', '成本', '售價', '安全庫存', '期初庫存', '期初倉庫', '備註'];
-  const M_COLS = ['日期（必填）', '倉庫', '類型（必填）', '品號', '商品名稱', '數量（必填）', '單價', '供應商/客戶', '備註'];
+  const M_COLS = ['日期（必填）', '時間', '倉庫', '類型（必填）', '品號', '商品名稱', '數量（必填）', '單價', '供應商/客戶', '備註'];
   const P_MAP = { 品號: 'code', 條碼: 'code', '品號/條碼': 'code', 商品名稱: 'name', 名稱: 'name', 品名: 'name', 商品: 'name', 規格: 'spec', 分類: 'category', 類別: 'category', 單位: 'unit', 成本: 'cost', 進價: 'cost', 售價: 'price', 安全庫存: 'safety', 期初庫存: 'open', 期初倉庫: 'openWh', 備註: 'note' };
-  const M_MAP = { 日期: 'date', 倉庫: 'wh', 倉別: 'wh', 庫別: 'wh', 類型: 'type', 品號: 'code', 條碼: 'code', '品號/條碼': 'code', 商品名稱: 'name', 品名: 'name', 商品: 'name', 數量: 'qty', 單價: 'price', 價格: 'price', '供應商/客戶': 'party', 供應商: 'party', 客戶: 'party', 對象: 'party', 備註: 'note' };
+  const M_MAP = { 日期: 'date', 時間: 'time', 倉庫: 'wh', 倉別: 'wh', 庫別: 'wh', 類型: 'type', 品號: 'code', 條碼: 'code', '品號/條碼': 'code', 商品名稱: 'name', 品名: 'name', 商品: 'name', 數量: 'qty', 單價: 'price', 價格: 'price', '供應商/客戶': 'party', 供應商: 'party', 客戶: 'party', 對象: 'party', 備註: 'note' };
   const EX_NOTE = '範例（不會匯入）';
   const isExampleRow = o => normCode(cellStr(o.code)) === 'EX-001' || cellStr(o.note).includes(EX_NOTE);
   const normH = h => String(h ?? '').replace(/[（(][^）)]*[）)]/g, '').replace(/[\s*＊]/g, '').trim();
@@ -1686,20 +1701,21 @@ body.gated .whbar{display:none!important}
       [''],
       ['「進出貨」工作表'],
       ['・日期：例如 2026/10/8 或 2026-10-08。'],
+      ['・時間：選填，例如 14:30。空白的話會記成匯入的時間。'],
       ['・倉庫：從下拉選單選（名稱要和網站上的倉庫一模一樣，可以看「倉庫」工作表）。空白＝第一個倉庫。'],
       ['・類型：從下拉選單選「進貨」或「出貨」。（調撥請在網站上做）'],
       ['・品號 或 商品名稱：擇一填即可（品號優先）。可以用同一個檔案「商品」工作表裡剛新增的商品。'],
       ['・數量：必填，大於 0。'],
       ['・單價：可以空白 → 進貨帶入上次進價（或商品成本），出貨帶入商品售價。'],
-      [`  例：2026/10/8 ｜ ${whN[0]} ｜ 進貨 ｜ A001 ｜ ｜ 48 ｜ 60 ｜ 綠野食品 ｜ 訂單 #123`],
-      [`  例：2026/10/8 ｜ ${whN[0]} ｜ 出貨 ｜ A001 ｜ ｜ 3 ｜ ｜ 門市散客 ｜`],
+      [`  例：2026/10/8 ｜ 09:30 ｜ ${whN[0]} ｜ 進貨 ｜ A001 ｜ ｜ 48 ｜ 60 ｜ 綠野食品 ｜ 訂單 #123`],
+      [`  例：2026/10/8 ｜ 14:05 ｜ ${whN[0]} ｜ 出貨 ｜ A001 ｜ ｜ 3 ｜ ｜ 門市散客 ｜`],
       [''],
       ['「現有商品」「倉庫」工作表只是給你對照用的，匯入時會忽略。'],
       ['匯入的紀錄跟手動記的一樣：不能修改刪除，記錯了請在網站上「沖銷」。'],
     ];
     const blob = XL.write([
       { name: '商品', rows: [P_COLS, ['EX-001', '有機燕麥奶（範例）', '1L / 瓶', '飲品', '瓶', 62, 99, 24, 30, whN[0], EX_NOTE]], exampleRows: [1], widths: [14, 22, 14, 10, 8, 10, 10, 10, 10, 16, 20], textCols: [0], lists: [{ col: 9, values: whN }] },
-      { name: '進出貨', rows: [M_COLS, [today().replace(/-/g, '/'), whN[0], '進貨', 'EX-001', '有機燕麥奶（範例）', 24, 60, '綠野食品', EX_NOTE]], exampleRows: [1], widths: [13, 16, 11, 14, 22, 11, 10, 16, 20], textCols: [3], lists: [{ col: 1, values: whN }, { col: 2, values: ['進貨', '出貨'] }] },
+      { name: '進出貨', rows: [M_COLS, [today().replace(/-/g, '/'), '09:30', whN[0], '進貨', 'EX-001', '有機燕麥奶（範例）', 24, 60, '綠野食品', EX_NOTE]], exampleRows: [1], widths: [13, 9, 16, 11, 14, 22, 11, 10, 16, 20], textCols: [1, 4], lists: [{ col: 2, values: whN }, { col: 3, values: ['進貨', '出貨'] }] },
       { name: '說明', rows: help, widths: [110], header: false, wrap: true },
       { name: '現有商品', rows: [['品號', '商品名稱', '規格', '單位', '分類', '目前庫存（合計）', ...(whA.length > 1 ? whA.map(w => w.name) : [])], ...act.map(p => [p.code || '', p.name, p.spec || '', p.unit || '', p.category || '', r2(C.st[p.id].stock), ...(whA.length > 1 ? whA.map(w => r2(C.st[p.id].wh[w.id] || 0)) : [])])], widths: [14, 24, 14, 8, 10, 14, ...whA.map(() => 14)], textCols: [0] },
       { name: '倉庫', rows: [['倉庫名稱'], ...whA.map(w => [w.name])], widths: [24] },
@@ -1718,6 +1734,17 @@ body.gated .whbar{display:none!important}
     let y = +m[1]; if (y < 1000) y += y < 200 ? 1911 : 2000;   // 民國年 115/10/8 也可以
     const d = new Date(y, +m[2] - 1, +m[3]);
     return d.getMonth() === +m[2] - 1 ? dstr(d) : NaN;
+  }
+  // 時間：Excel 時間（一天的小數）、日期時間、或文字 14:30 / 2:30 PM / 下午2:30
+  function cellTime(v, dateCell) {
+    const fromFrac = f => { const mins = Math.round((f - Math.floor(f)) * 1440) % 1440; return `${pad(Math.floor(mins / 60))}:${pad(mins % 60)}`; };
+    if (v == null || v === '') { if (typeof dateCell === 'number' && dateCell % 1) return fromFrac(dateCell); const m = String(dateCell ?? '').match(/\s(\d{1,2}):(\d{2})/); return m ? `${pad(+m[1])}:${m[2]}` : null; }
+    if (typeof v === 'number') return v >= 0 && v < 1 ? fromFrac(v) : v % 1 ? fromFrac(v) : NaN;
+    const s = String(v).trim(); const m = s.match(/^(上午|下午)?\s*(\d{1,2})[:：](\d{2})(?::\d{2})?\s*(AM|PM|am|pm)?$/);
+    if (!m) return NaN;
+    let h = +m[2]; const pm = m[1] === '下午' || /pm/i.test(m[4] || ''), am = m[1] === '上午' || /am/i.test(m[4] || '');
+    if (pm && h < 12) h += 12; if (am && h === 12) h = 0;
+    return h < 24 && +m[3] < 60 ? `${pad(h)}:${m[3]}` : NaN;
   }
   const TYPE_IN = ['進貨', '進', '入庫', '採購', 'in'], TYPE_OUT = ['出貨', '出', '出庫', '銷貨', '銷售', 'out'];
 
@@ -1787,6 +1814,7 @@ body.gated .whbar{display:none!important}
       const r = { row: o.row, errs: [], warns: [] };
       const date = cellDate(o.date); if (date === null) r.errs.push('日期沒填'); else if (Number.isNaN(date)) r.errs.push(`日期看不懂：「${cellStr(o.date)}」`);
       const wh = resolveWh(o.wh, r);
+      const tm = cellTime(o.time, o.date); if (Number.isNaN(tm)) r.errs.push(`時間看不懂：「${cellStr(o.time)}」`);
       const t = cellStr(o.type).toLowerCase(); const type = TYPE_IN.includes(t) ? 'in' : TYPE_OUT.includes(t) ? 'out' : null;
       if (!type) r.errs.push(t ? `類型要填「進貨」或「出貨」，不是「${cellStr(o.type)}」` : '類型沒填');
       const qty = cellNum(o.qty); if (qty === null) r.errs.push('數量沒填'); else if (Number.isNaN(qty)) r.errs.push('數量不是數字'); else if (qty <= 0) r.errs.push('數量要大於 0');
@@ -1814,11 +1842,11 @@ body.gated .whbar{display:none!important}
         if (type === 'in') pr = p ? (C.st[p.id].lastIn ?? num(p.cost)) : fromFile.data.cost;
         else pr = p ? num(p.price) : fromFile.data.price;
       }
-      r.data = { type, productId: pid, warehouseId: wh, qty, price: pr || 0, party: cellStr(o.party), date, note: cellStr(o.note) };
+      r.data = { type, productId: pid, warehouseId: wh, qty, price: pr || 0, party: cellStr(o.party), date, time: tm || nowHM(), note: cellStr(o.note) };
       moves.push(r);
     }
     // 模擬庫存（依日期）
-    moves.filter(r => !r.errs.length).sort((a, b) => a.data.date < b.data.date ? -1 : a.data.date > b.data.date ? 1 : (a.data.type === 'in' ? -1 : 1)).forEach(r => {
+    moves.filter(r => !r.errs.length).sort((a, b) => a.data.date < b.data.date ? -1 : a.data.date > b.data.date ? 1 : a.data.time !== b.data.time ? (a.data.time < b.data.time ? -1 : 1) : (a.data.type === 'in' ? -1 : 1)).forEach(r => {
       const s = stockOf(r.data.productId, r.data.warehouseId) + (r.data.type === 'in' ? r.data.qty : -r.data.qty); sim[r.data.productId + '|' + r.data.warehouseId] = s;
       if (r.data.type === 'out' && s < 0) r.warns.push(`出貨後${multiWh() ? '「' + whName(r.data.warehouseId) + '」' : ''}庫存會變 ${qf(s)}`);
     });
@@ -1849,7 +1877,7 @@ body.gated .whbar{display:none!important}
       const st = r => r.errs.length ? `<span class="chip bad">✕ ${esc(r.errs.join('、'))}</span>` : r.warns.length ? `<span class="chip warn">! ${esc(r.warns.join('、'))}</span>` : `<span class="chip good">✓</span>`;
       const LIM = 300, mw = multiWh();
       if (prods.length) h += `<div class="sec-title">商品（${prods.length} 列）</div><div class="tablewrap"><table class="btbl"><thead><tr><th>列</th><th>動作</th><th>品號</th><th>名稱</th><th>成本</th><th>售價</th><th>期初</th><th>檢查</th></tr></thead><tbody>${prods.slice(0, LIM).map(r => `<tr class="${r.errs.length ? 'bad' : ''}"><td>${r.row}</td><td>${r.action === 'update' ? '更新' : '新增'}</td><td>${esc(r.data?.code || '')}</td><td>${esc(r.data?.name || '')}</td><td class="num">${r.errs.length ? '' : qf(r.data.cost)}</td><td class="num">${r.errs.length ? '' : qf(r.data.price)}</td><td class="num">${r.open ? qf(r.open) : ''}</td><td>${st(r)}</td></tr>`).join('')}</tbody></table></div>`;
-      if (moves.length) h += `<div class="sec-title">進出貨（${moves.length} 列）</div><div class="tablewrap"><table class="btbl"><thead><tr><th>列</th><th>日期</th>${mw ? '<th>倉庫</th>' : ''}<th>類型</th><th>商品</th><th>數量</th><th>單價</th><th>對象</th><th>檢查</th></tr></thead><tbody>${moves.slice(0, LIM).map(r => `<tr class="${r.errs.length ? 'bad' : ''}"><td>${r.row}</td><td>${r.data.date && !Number.isNaN(r.data.date) ? esc(r.data.date) : ''}</td>${mw ? `<td>${r.data.warehouseId ? esc(whName(r.data.warehouseId)) : ''}</td>` : ''}<td>${r.data.type === 'in' ? '進貨' : r.data.type === 'out' ? '出貨' : ''}</td><td>${esc(r.pname || '')}</td><td class="num">${r.data.qty > 0 ? qf(r.data.qty) : ''}</td><td class="num">${!r.errs.length ? money(r.data.price) + (r.defPrice ? '<small class="muted">（預設）</small>' : '') : ''}</td><td>${esc(r.data.party || '')}</td><td>${st(r)}</td></tr>`).join('')}</tbody></table></div>`;
+      if (moves.length) h += `<div class="sec-title">進出貨（${moves.length} 列）</div><div class="tablewrap"><table class="btbl"><thead><tr><th>列</th><th>日期</th>${mw ? '<th>倉庫</th>' : ''}<th>類型</th><th>商品</th><th>數量</th><th>單價</th><th>對象</th><th>檢查</th></tr></thead><tbody>${moves.slice(0, LIM).map(r => `<tr class="${r.errs.length ? 'bad' : ''}"><td>${r.row}</td><td>${r.data.date && !Number.isNaN(r.data.date) ? esc(r.data.date) + (r.data.time && !Number.isNaN(r.data.time) ? ' ' + esc(r.data.time) : '') : ''}</td>${mw ? `<td>${r.data.warehouseId ? esc(whName(r.data.warehouseId)) : ''}</td>` : ''}<td>${r.data.type === 'in' ? '進貨' : r.data.type === 'out' ? '出貨' : ''}</td><td>${esc(r.pname || '')}</td><td class="num">${r.data.qty > 0 ? qf(r.data.qty) : ''}</td><td class="num">${!r.errs.length ? money(r.data.price) + (r.defPrice ? '<small class="muted">（預設）</small>' : '') : ''}</td><td>${esc(r.data.party || '')}</td><td>${st(r)}</td></tr>`).join('')}</tbody></table></div>`;
       if (prods.length > LIM || moves.length > LIM) h += `<p class="hint">預覽只顯示前 ${LIM} 列，匯入會處理全部。</p>`;
       if (!prods.length && !moves.length) h += `<div class="info warn">檔案裡沒有資料列${bulk.res.exSkipped ? '（只有範例列）' : ''}，請在範例列下面填你的資料。</div>`;
       bulk.count = ok(prods).length + ok(moves).length;
@@ -1879,7 +1907,7 @@ body.gated .whbar{display:none!important}
     const t0 = Date.now(); let k = 0;
     putProducts(okP.map(r => r.data));
     const list = [];
-    okP.filter(r => r.action === 'new' && r.open > 0).forEach(r => list.push({ id: uid() + k, createdAt: t0 + k++, type: 'in', productId: r.data.id, warehouseId: r.openWh || MAIN_WH, qty: r.open, price: r.data.cost, party: '', date: today(), note: '期初庫存', batch }));
+    okP.filter(r => r.action === 'new' && r.open > 0).forEach(r => list.push({ id: uid() + k, createdAt: t0 + k++, type: 'in', productId: r.data.id, warehouseId: r.openWh || MAIN_WH, qty: r.open, price: r.data.cost, party: '', date: today(), time: nowHM(), note: '期初庫存', batch }));
     okM.forEach(r => list.push({ id: uid() + k, createdAt: t0 + k++, ...r.data, batch }));
     if (list.length) addMoves(list);
     $('#bulkDlg').close();
