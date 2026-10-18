@@ -837,8 +837,14 @@ body.nomoney .money-only{display:none!important}
     const q = since ? F.query(col, F.where('serverAt', '>=', since)) : col;
     let first = true;
     return F.onSnapshot(q, { includeMetadataChanges: true }, snap => {
-      // 只處理新增 / 變更；紀錄不會被刪除，'removed' 只會是本機還沒上傳的暫時狀態，忽略
-      snap.docChanges().forEach(ch => { if (ch.type !== 'removed') map.set(ch.doc.id, toValue(ch.doc.id, ch.doc.data())); });
+      if (!since) {
+        // 完整同步：雲端有什麼就是什麼，在 Firebase 後台刪掉的資料也會從這台裝置消失（還沒上傳的也在 snap.docs 裡）
+        map.clear();
+        snap.docs.forEach(d => map.set(d.id, toValue(d.id, d.data())));
+      } else {
+        // 只拿新資料：只處理新增 / 變更；'removed' 只會是本機還沒上傳的暫時狀態，忽略
+        snap.docChanges().forEach(ch => { if (ch.type !== 'removed') map.set(ch.doc.id, toValue(ch.doc.id, ch.doc.data())); });
+      }
       publish(name);
       if (!snap.metadata.fromCache) markSynced(name);
       if (first) { first = false; onFirst && onFirst(); }
