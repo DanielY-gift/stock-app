@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>一年級小測驗</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@500;700;900&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<style>
+:root{
+  --bg:#FFF8EC; --card:#FFFFFF; --ink:#2B2A33; --muted:#7A7686;
+  --brand:#FF8A3D; --brand-ink:#fff; --brand-soft:#FFE6D3;
+  --good:#2FA36B; --good-soft:#DDF5E8; --bad:#E0524A; --bad-soft:#FCE3E1;
+  --line:#EFE6D8; --gold:#F5B400; --silver:#A8B0BC; --bronze:#C97C3A;
+  --shadow:0 6px 0 rgba(0,0,0,.06);
+}
+@media (prefers-color-scheme: dark){
+  :root{--bg:#1C1B22;--card:#26252E;--ink:#F3F1F7;--muted:#A9A5B5;--brand-soft:#4A3022;
+  --good-soft:#1E3A2C;--bad-soft:#45231F;--line:#36343F;--shadow:0 6px 0 rgba(0,0,0,.3)}
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Noto Sans TC",system-ui,sans-serif;
+  min-height:100vh;display:flex;justify-content:center}
+.wrap{width:100%;max-width:560px;padding:20px 16px 48px}
+.card{background:var(--card);border-radius:24px;padding:24px;box-shadow:var(--shadow);border:2px solid var(--line)}
+h1{font-size:30px;font-weight:900;margin:8px 0 4px;text-align:center}
+.sub{color:var(--muted);text-align:center;margin:0 0 20px}
+.hero{font-size:64px;text-align:center;line-height:1}
+label{display:block;font-weight:700;margin:16px 0 8px}
+input{width:100%;font:inherit;font-size:22px;padding:14px 16px;border-radius:16px;border:2px solid var(--line);
+  background:var(--bg);color:var(--ink);outline:none}
+input:focus{border-color:var(--brand)}
+.btn{display:block;width:100%;font:inherit;font-weight:900;font-size:22px;padding:16px;border:0;border-radius:18px;
+  background:var(--brand);color:var(--brand-ink);cursor:pointer;margin-top:16px;box-shadow:0 5px 0 #D96A22}
+.btn:active{transform:translateY(3px);box-shadow:0 2px 0 #D96A22}
+.btn:disabled{opacity:.5;cursor:default}
+.btn.ghost{background:transparent;color:var(--ink);border:2px solid var(--line);box-shadow:none;font-size:18px;padding:12px}
+.row{display:flex;gap:10px}.row .btn{flex:1}
+.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;font-weight:700;color:var(--muted)}
+.bar{height:14px;background:var(--line);border-radius:99px;overflow:hidden;margin-bottom:20px}
+.bar>i{display:block;height:100%;background:var(--brand);border-radius:99px;transition:width .3s}
+.q{font-size:28px;font-weight:900;line-height:1.4;margin:4px 0 8px;text-align:center}
+.pic{font-size:44px;text-align:center;letter-spacing:4px;margin:8px 0 4px;word-break:break-all}
+.opts{display:grid;gap:12px;margin-top:20px}
+.opt{font:inherit;font-size:26px;font-weight:700;padding:18px;border-radius:18px;border:3px solid var(--line);
+  background:var(--card);color:var(--ink);cursor:pointer;text-align:center}
+.opt:hover{border-color:var(--brand);background:var(--brand-soft)}
+.opt.picked{border-color:var(--brand);background:var(--brand-soft)}
+.score{font
