@@ -47,4 +47,259 @@ input:focus{border-color:var(--brand)}
   background:var(--card);color:var(--ink);cursor:pointer;text-align:center}
 .opt:hover{border-color:var(--brand);background:var(--brand-soft)}
 .opt.picked{border-color:var(--brand);background:var(--brand-soft)}
-.score{font
+.score{font-size:80px;font-weight:900;text-align:center;color:var(--brand);line-height:1;margin:8px 0}
+.score small{font-size:28px;color:var(--muted)}
+.stats{display:flex;justify-content:center;gap:24px;color:var(--muted);font-weight:700;margin-bottom:8px}
+h2{font-size:22px;margin:28px 0 12px}
+.board{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.board li{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:16px;background:var(--bg);border:2px solid var(--line)}
+.board li.me{border-color:var(--brand);background:var(--brand-soft)}
+.rank{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;font-weight:900;background:var(--line);flex:none}
+.r1{background:var(--gold);color:#fff}.r2{background:var(--silver);color:#fff}.r3{background:var(--bronze);color:#fff}
+.nm{flex:1;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pt{font-weight:900;font-size:20px}.tm{color:var(--muted);font-size:14px;width:56px;text-align:right}
+.review{display:grid;gap:8px}
+.rv{padding:12px 14px;border-radius:14px;font-weight:500}
+.rv.ok{background:var(--good-soft)}.rv.no{background:var(--bad-soft)}
+.rv b{font-weight:900}
+.empty{color:var(--muted);text-align:center;padding:16px}
+.note{font-size:13px;color:var(--muted);text-align:center;margin-top:16px}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;place-items:center;padding:16px;z-index:9}
+.modal.on{display:grid}
+.modal .card{text-align:center;max-width:360px;width:100%}
+#qr{display:flex;justify-content:center;margin:12px 0;background:#fff;padding:12px;border-radius:12px}
+.link{word-break:break-all;font-size:13px;color:var(--muted)}
+.hide{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- 開始畫面 -->
+  <section id="s-start" class="card">
+    <div class="hero">✏️</div>
+    <h1>一年級小測驗</h1>
+    <p class="sub">共 10 題，每題 10 分，滿分 100 分</p>
+    <label for="name">請輸入你的名字</label>
+    <input id="name" maxlength="12" placeholder="例如：小明" autocomplete="off">
+    <button class="btn" id="go">開始考試 🚀</button>
+    <div class="row">
+      <button class="btn ghost" id="toBoard">🏆 看排行榜</button>
+      <button class="btn ghost" id="showQr">📱 分享 QR 碼</button>
+    </div>
+    <p class="note" id="modeNote"></p>
+  </section>
+
+  <!-- 作答畫面 -->
+  <section id="s-quiz" class="card hide">
+    <div class="top"><span id="qnum"></span><span id="who"></span></div>
+    <div class="bar"><i id="prog"></i></div>
+    <div class="q" id="qtext"></div>
+    <div class="pic" id="qpic"></div>
+    <div class="opts" id="opts"></div>
+  </section>
+
+  <!-- 成績 + 排行榜 -->
+  <section id="s-result" class="card hide">
+    <div id="myResult">
+      <div class="hero" id="medal">🎉</div>
+      <h1 id="cheer">考完囉！</h1>
+      <div class="score"><span id="myScore">0</span><small> 分</small></div>
+      <div class="stats"><span id="myRight"></span><span id="myTime"></span></div>
+    </div>
+    <h2>🏆 排行榜</h2>
+    <ol class="board" id="board"><li class="empty">載入中…</li></ol>
+    <div id="reviewWrap">
+      <h2>📝 答題檢討</h2>
+      <div class="review" id="review"></div>
+    </div>
+    <button class="btn ghost" id="home">回首頁</button>
+  </section>
+
+</div>
+
+<div class="modal" id="qrModal">
+  <div class="card">
+    <h2 style="margin-top:0">掃描 QR 碼一起考試</h2>
+    <div id="qr"></div>
+    <div class="link" id="qrLink"></div>
+    <button class="btn" id="qrClose">關閉</button>
+  </div>
+</div>
+
+<script type="module">
+/* ============================================================
+   ① 貼上你的 Firebase 設定（Firebase 主控台 → 專案設定 → 你的應用程式）
+      留空的話會進入「示範模式」：排行榜只存在這台裝置上。
+   ============================================================ */
+const firebaseConfig = {
+  apiKey: "AIzaSyDMEmdPWmMVeqImFlDhnH-RbN3lWtkPies",
+  authDomain: "rrrds-e0144.firebaseapp.com",
+  projectId: "rrrds-e0144",
+  appId: "1:957178365914:web:40337ee47d7de543d1a2e3"
+};
+
+/* ② 題目（所有人看到的都一樣；answer 是正確選項的位置，從 0 開始算） */
+const QUESTIONS = [
+  { q: "3 + 4 = ?", options: ["6", "7", "8"], answer: 1 },
+  { q: "9 − 5 = ?", options: ["3", "4", "5"], answer: 1 },
+  { q: "有幾顆蘋果？", pic: "🍎🍎🍎🍎🍎🍎", options: ["5 顆", "6 顆", "7 顆"], answer: 1 },
+  { q: "哪一個數字最大？", options: ["12", "21", "18"], answer: 1 },
+  { q: "8 + 7 = ?", options: ["14", "15", "16"], answer: 1 },
+  { q: "哪一個是三角形？", options: ["🟦", "🔺", "🟠"], answer: 1 },
+  { q: "「大」的相反是什麼？", options: ["多", "高", "小"], answer: 2 },
+  { q: "一個星期有幾天？", options: ["5 天", "6 天", "7 天"], answer: 2 },
+  { q: "短針指著 3，長針指著 12，是幾點？", pic: "🕒", options: ["12 點", "3 點", "9 點"], answer: 1 },
+  { q: "小明有 10 元，買了 4 元的糖果，還剩幾元？", options: ["4 元", "6 元", "14 元"], answer: 1 },
+];
+const POINTS = 10;
+
+/* ---------- 場次代碼：網址 ?room=xxx，同一個代碼＝同一個排行榜 ---------- */
+const params = new URLSearchParams(location.search);
+const ROOM = (params.get("room") || "class1").replace(/[\/\s.#$\[\]]/g, "").slice(0, 40) || "class1";
+const DEMO = !firebaseConfig.apiKey;
+
+/* ---------- 資料層（Firebase 或示範模式） ---------- */
+let api;
+if (!DEMO) {
+  const V = "10.12.2";
+  const { initializeApp } = await import(`https://www.gstatic.com/firebasejs/${V}/firebase-app.js`);
+  const { getAuth, signInAnonymously } = await import(`https://www.gstatic.com/firebasejs/${V}/firebase-auth.js`);
+  const fs = await import(`https://www.gstatic.com/firebasejs/${V}/firebase-firestore.js`);
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = fs.getFirestore(app);
+  const cred = await signInAnonymously(auth);
+  const uid = cred.user.uid;
+  const col = fs.collection(db, "quizzes", ROOM, "scores");
+  api = {
+    uid,
+    async mine() { const s = await fs.getDoc(fs.doc(col, uid)); return s.exists() ? s.data() : null; },
+    async save(r) { await fs.setDoc(fs.doc(col, uid), { ...r, at: fs.serverTimestamp() }); },
+    watch(cb) { return fs.onSnapshot(col, snap => cb(snap.docs.map(d => ({ id: d.id, ...d.data() })))); },
+  };
+} else {
+  const KEY = "quiz-demo-" + ROOM;
+  const load = () => { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch { return []; } };
+  const listeners = new Set();
+  const uid = "demo-" + Math.random().toString(36).slice(2);
+  api = {
+    uid,
+    async mine() { return null; },
+    async save(r) {
+      const all = load(); all.push({ id: uid, ...r });
+      try { localStorage.setItem(KEY, JSON.stringify(all)); } catch {}
+      listeners.forEach(f => f(all));
+    },
+    watch(cb) { listeners.add(cb); cb(load()); return () => listeners.delete(cb); },
+  };
+}
+
+/* ---------- 畫面 ---------- */
+const $ = id => document.getElementById(id);
+const show = id => ["s-start", "s-quiz", "s-result"].forEach(s => $(s).classList.toggle("hide", s !== id));
+$("modeNote").textContent = DEMO
+  ? "目前是示範模式：成績只存在這台裝置。接上 Firebase 後大家才會共用排行榜。"
+  : `場次：${ROOM}`;
+
+let name = "", idx = 0, picks = [], startAt = 0, unwatch = null, myId = api.uid;
+
+$("go").onclick = async () => {
+  name = $("name").value.trim();
+  if (!name) { $("name").focus(); $("name").placeholder = "要先寫名字喔！"; return; }
+  $("go").disabled = true;
+  const prev = await api.mine();
+  $("go").disabled = false;
+  if (prev) { alert("你已經考過了，直接看成績！"); showResult(prev); return; }
+  idx = 0; picks = []; startAt = Date.now();
+  $("who").textContent = "👦 " + name;
+  show("s-quiz"); renderQ();
+};
+$("name").addEventListener("keydown", e => { if (e.key === "Enter") $("go").click(); });
+
+function renderQ() {
+  const Q = QUESTIONS[idx];
+  $("qnum").textContent = `第 ${idx + 1} / ${QUESTIONS.length} 題`;
+  $("prog").style.width = (idx / QUESTIONS.length * 100) + "%";
+  $("qtext").textContent = Q.q;
+  $("qpic").textContent = Q.pic || "";
+  $("opts").innerHTML = "";
+  Q.options.forEach((o, i) => {
+    const b = document.createElement("button");
+    b.className = "opt"; b.textContent = o;
+    b.onclick = () => {
+      if (picks.length > idx) return;
+      picks.push(i); b.classList.add("picked");
+      setTimeout(() => { idx++; idx < QUESTIONS.length ? renderQ() : finish(); }, 250);
+    };
+    $("opts").appendChild(b);
+  });
+}
+
+async function finish() {
+  $("prog").style.width = "100%";
+  const right = picks.filter((p, i) => p === QUESTIONS[i].answer).length;
+  const result = { name, score: right * POINTS, right, timeMs: Date.now() - startAt, picks };
+  try { await api.save(result); } catch (e) { alert("成績上傳失敗，請再試一次：" + e.message); }
+  showResult(result);
+}
+
+const fmt = ms => { const s = Math.round(ms / 1000); return s >= 60 ? `${Math.floor(s / 60)}分${s % 60}秒` : `${s}秒`; };
+
+function showResult(r) {
+  show("s-result");
+  $("myResult").classList.toggle("hide", !r);
+  $("reviewWrap").classList.toggle("hide", !(r && r.picks));
+  if (r) {
+    $("myScore").textContent = r.score;
+    $("myRight").textContent = `答對 ${r.right} 題`;
+    $("myTime").textContent = `用時 ${fmt(r.timeMs)}`;
+    $("medal").textContent = r.score === 100 ? "🏅" : r.score >= 80 ? "🌟" : r.score >= 60 ? "👍" : "💪";
+    $("cheer").textContent = r.score === 100 ? "全對！太厲害了！" : r.score >= 60 ? "做得很好！" : "再加油喔！";
+    if (r.picks) {
+      $("review").innerHTML = "";
+      QUESTIONS.forEach((Q, i) => {
+        const ok = r.picks[i] === Q.answer;
+        const d = document.createElement("div");
+        d.className = "rv " + (ok ? "ok" : "no");
+        d.innerHTML = `${ok ? "✅" : "❌"} <b>${i + 1}.</b> `;
+        d.append(Q.q + (ok ? "" : `　正確答案：${Q.options[Q.answer]}`));
+        $("review").appendChild(d);
+      });
+    }
+  }
+  if (unwatch) unwatch();
+  unwatch = api.watch(renderBoard);
+}
+
+function renderBoard(rows) {
+  rows = rows.filter(x => typeof x.score === "number")
+    .sort((a, b) => b.score - a.score || a.timeMs - b.timeMs);
+  const ol = $("board"); ol.innerHTML = "";
+  if (!rows.length) { ol.innerHTML = '<li class="empty">還沒有人交卷</li>'; return; }
+  rows.forEach((x, i) => {
+    const li = document.createElement("li");
+    if (x.id === myId) li.className = "me";
+    const rk = document.createElement("span");
+    rk.className = "rank" + (i < 3 ? " r" + (i + 1) : ""); rk.textContent = i + 1;
+    const nm = document.createElement("span"); nm.className = "nm"; nm.textContent = x.name || "同學";
+    const pt = document.createElement("span"); pt.className = "pt"; pt.textContent = x.score + " 分";
+    const tm = document.createElement("span"); tm.className = "tm"; tm.textContent = fmt(x.timeMs || 0);
+    li.append(rk, nm, pt, tm); ol.appendChild(li);
+  });
+}
+
+$("toBoard").onclick = async () => { showResult(await api.mine()); };
+$("home").onclick = () => { if (unwatch) { unwatch(); unwatch = null; } show("s-start"); };
+
+/* QR 碼：產生目前場次的網址 */
+$("showQr").onclick = () => {
+  const url = location.origin + location.pathname + "?room=" + encodeURIComponent(ROOM);
+  $("qr").innerHTML = ""; $("qrLink").textContent = url;
+  if (window.QRCode) new QRCode($("qr"), { text: url, width: 220, height: 220 });
+  $("qrModal").classList.add("on");
+};
+$("qrClose").onclick = () => $("qrModal").classList.remove("on");
+</script>
+</body>
+</html>
