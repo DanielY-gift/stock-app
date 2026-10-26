@@ -70,6 +70,8 @@ h2{font-size:22px;margin:28px 0 12px}
 #qr{display:flex;justify-content:center;margin:12px 0;background:#fff;padding:12px;border-radius:12px}
 .link{word-break:break-all;font-size:13px;color:var(--muted)}
 .hide{display:none}
+.btn.teach{background:var(--good);box-shadow:0 5px 0 #237F53}
+.btn.teach:active{box-shadow:0 2px 0 #237F53}
 </style>
 </head>
 <body>
@@ -87,6 +89,7 @@ h2{font-size:22px;margin:28px 0 12px}
       <button class="btn ghost" id="toBoard">🏆 看排行榜</button>
       <button class="btn ghost" id="showQr">📱 分享 QR 碼</button>
     </div>
+    <button class="btn teach hide" id="newPaper">🔄 換一份新考卷</button>
     <p class="note" id="modeNote"></p>
   </section>
 
@@ -139,25 +142,49 @@ const firebaseConfig = {
   appId: "1:957178365914:web:40337ee47d7de543d1a2e3"
 };
 
-/* ② 題目（所有人看到的都一樣；answer 是正確選項的位置，從 0 開始算） */
-const QUESTIONS = [
-  { q: "3 + 4 = ?", options: ["6", "7", "8"], answer: 1 },
-  { q: "9 − 5 = ?", options: ["3", "4", "5"], answer: 1 },
-  { q: "有幾顆蘋果？", pic: "🍎🍎🍎🍎🍎🍎", options: ["5 顆", "6 顆", "7 顆"], answer: 1 },
-  { q: "哪一個數字最大？", options: ["12", "21", "18"], answer: 1 },
-  { q: "8 + 7 = ?", options: ["14", "15", "16"], answer: 1 },
-  { q: "哪一個是三角形？", options: ["🟦", "🔺", "🟠"], answer: 1 },
-  { q: "「大」的相反是什麼？", options: ["多", "高", "小"], answer: 2 },
-  { q: "一個星期有幾天？", options: ["5 天", "6 天", "7 天"], answer: 2 },
-  { q: "短針指著 3，長針指著 12，是幾點？", pic: "🕒", options: ["12 點", "3 點", "9 點"], answer: 1 },
-  { q: "小明有 10 元，買了 4 元的糖果，還剩幾元？", options: ["4 元", "6 元", "14 元"], answer: 1 },
-];
-const POINTS = 10;
-
-/* ---------- 場次代碼：網址 ?room=xxx，同一個代碼＝同一個排行榜 ---------- */
+/* ---------- 場次代碼：網址 ?room=xxx，同一個代碼＝同一份考卷＋同一個排行榜 ---------- */
 const params = new URLSearchParams(location.search);
 const ROOM = (params.get("room") || "class1").replace(/[\/\s.#$\[\]]/g, "").slice(0, 40) || "class1";
+const TEACHER = params.get("teacher") === "1";   // 老師網址加 &teacher=1 才會出現「換新考卷」按鈕
 const DEMO = !firebaseConfig.apiKey;
+
+/* ② 題目：依場次代碼自動出題。同一個代碼，每個人拿到的題目完全一樣；換代碼就換一份新考卷 */
+function makeRng(seed) {
+  let h = 1779033703 ^ seed.length;
+  for (let i = 0; i < seed.length; i++) { h = Math.imul(h ^ seed.charCodeAt(i), 3432918353); h = h << 13 | h >>> 19; }
+  return () => { h = Math.imul(h ^ h >>> 16, 2246822507); h = Math.imul(h ^ h >>> 13, 3266489909); h ^= h >>> 16; return (h >>> 0) / 4294967296; };
+}
+function buildQuestions(seed) {
+  const r = makeRng(seed);
+  const int = (a, b) => a + Math.floor(r() * (b - a + 1));
+  const pick = arr => arr[Math.floor(r() * arr.length)];
+  const shuffle = arr => { for (let i = arr.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [arr[i], arr[j]] = [arr[j], arr[i]]; } return arr; };
+  // 正確答案＋兩個錯的，打亂順序
+  const mc = (q, right, wrongs, unit = "", pic) => {
+    const opts = shuffle([right, ...wrongs].map(x => x + unit));
+    return { q, pic, options: opts, answer: opts.indexOf(right + unit) };
+  };
+  const near = (n, min = 0) => { const s = new Set(); while (s.size < 2) { const d = n + pick([-2, -1, 1, 2]); if (d >= min && d !== n) s.add(d); } return [...s]; };
+
+  const makers = {
+    add() { const a = int(2, 9), b = int(2, 9); return mc(`${a} + ${b} = ?`, a + b, near(a + b)); },
+    sub() { const a = int(8, 18), b = int(2, a - 1); return mc(`${a} − ${b} = ?`, a - b, near(a - b)); },
+    missing() { const a = int(1, 9), b = int(1, 9); return mc(`${a} + ? = ${a + b}`, b, near(b, 1)); },
+    count() { const n = int(3, 9), f = pick(["🍎", "🍌", "🐟", "⭐", "🎈", "🐥", "🍓"]); return mc(`有幾個？`, n, near(n, 1), " 個", f.repeat(n)); },
+    biggest() { const s = new Set(); while (s.size < 3) s.add(int(10, 99)); const a = [...s]; return mc("哪一個數字最大？", Math.max(...a), a.filter(x => x !== Math.max(...a))); },
+    smallest() { const s = new Set(); while (s.size < 3) s.add(int(10, 99)); const a = [...s]; return mc("哪一個數字最小？", Math.min(...a), a.filter(x => x !== Math.min(...a))); },
+    sequence() { const st = pick([1, 2, 5, 10]), s0 = st * int(0, 3); const seq = [0, 1, 2, 3].map(i => s0 + st * i); return mc(`${seq.slice(0, 3).join("、")}、？`, seq[3], near(seq[3], 0)); },
+    clock() { const h = int(1, 12); const face = "🕐🕑🕒🕓🕔🕕🕖🕗🕘🕙🕚🕛"; const others = shuffle([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].filter(x => x !== h)).slice(0, 2); return mc("時鐘上是幾點？", h, others, " 點", [...face][h - 1]); },
+    money() { const n = pick(["小明", "小美", "小華", "阿寶"]), has = int(6, 20), cost = int(1, has - 1), item = pick(["糖果", "鉛筆", "貼紙", "橡皮擦"]); return mc(`${n}有 ${has} 元，買了 ${cost} 元的${item}，還剩幾元？`, has - cost, [...new Set([has + cost, ...near(has - cost, 0)])].filter(x => x !== has - cost).slice(0, 2), " 元"); },
+    opposite() { const [w, o] = pick([["大", "小"], ["上", "下"], ["高", "矮"], ["長", "短"], ["多", "少"], ["前", "後"], ["快", "慢"], ["左", "右"], ["胖", "瘦"], ["冷", "熱"]]); const others = shuffle(["好", "紅", "天", "山", "水", "花", "手", "口"]).slice(0, 2); return mc(`「${w}」的相反是什麼？`, o, others); },
+    shape() { const [nm, right, w] = pick([["三角形", "🔺", ["🟦", "🟠"]], ["圓形", "🟠", ["🔺", "🟦"]], ["正方形", "🟦", ["🔺", "🟠"]], ["星形", "⭐", ["🔺", "🟦"]]]); return mc(`哪一個是${nm}？`, right, w); },
+    week() { return pick([() => mc("一個星期有幾天？", 7, [5, 6], " 天"), () => mc("星期一的下一天是星期幾？", "星期二", ["星期三", "星期日"]), () => mc("星期六的下一天是星期幾？", "星期日", ["星期一", "星期五"])])(); },
+  };
+  const plan = shuffle(["add", "sub", "missing", "count", pick(["biggest", "smallest"]), "sequence", "clock", "money", "opposite", pick(["shape", "week", "add", "sub"])]);
+  return plan.map(k => makers[k]());
+}
+const QUESTIONS = buildQuestions(ROOM);
+const POINTS = 10;
 
 /* ---------- 資料層（Firebase 或示範模式） ---------- */
 let api;
@@ -300,6 +327,18 @@ $("showQr").onclick = () => {
   $("qrModal").classList.add("on");
 };
 $("qrClose").onclick = () => $("qrModal").classList.remove("on");
+
+/* 老師專用：換一份新考卷（新代碼＝新題目＋新的排行榜），換完自動跳出新的 QR 碼 */
+if (TEACHER) {
+  $("newPaper").classList.remove("hide");
+  $("modeNote").textContent += "　（老師模式）";
+  $("newPaper").onclick = () => {
+    const d = new Date();
+    const code = `${d.getMonth() + 1}${String(d.getDate()).padStart(2, "0")}-${Math.random().toString(36).slice(2, 6)}`;
+    location.search = "?room=" + encodeURIComponent(code) + "&teacher=1&new=1";
+  };
+  if (params.get("new") === "1") $("showQr").click();
+}
 </script>
 </body>
 </html>
